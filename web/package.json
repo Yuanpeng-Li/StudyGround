@@ -1,0 +1,9 @@
+{
+  "name": "studyground-web",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'M1 loads markdown-it + katex from CDN. Vite is introduced in M2.' && exit 0"
+  }
+}

@@ -1,0 +1,134 @@
+#!/usr/bin/env node
+'use strict';
+
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+
+function getStudygroundDir() {
+  const raw =
+    process.env.CLAUDE_PLUGIN_OPTION_STUDYGROUND_DIR ||
+    process.env.STUDYGROUND_DIR ||
+    '~/studyground';
+  return raw.startsWith('~') ? path.join(os.homedir(), raw.slice(1)) : path.resolve(raw);
+}
+
+function getPort() {
+  return Number(
+    process.env.CLAUDE_PLUGIN_OPTION_WEB_PORT ||
+      process.env.STUDYGROUND_PORT ||
+      4321,
+  );
+}
+
+const [, , cmd, ...args] = process.argv;
+
+const handlers = { init: cmdInit, serve: cmdServe, doctor: cmdDoctor, open: cmdOpen };
+
+if (!cmd || !handlers[cmd]) {
+  console.log(`studyground — local web reader + Claude Code as tutor
+
+Usage:
+  studyground init           Scaffold the studyground directory
+  studyground serve          Start the local web reader
+  studyground doctor         Check environment
+  studyground open [lesson]  Open the reader in your default browser
+`);
+  process.exit(cmd ? 1 : 0);
+}
+
+handlers[cmd](args).catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+
+async function cmdInit(args) {
+  const quiet = args.includes('--quiet');
+  const dir = getStudygroundDir();
+  const tpl = path.join(PLUGIN_ROOT, 'templates/studyground');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.cpSync(tpl, dir, { recursive: true, force: false, errorOnExist: false });
+  if (!quiet) console.log(`✓ studyground initialized at ${dir}`);
+}
+
+async function cmdServe() {
+  const dir = getStudygroundDir();
+  const port = getPort();
+  if (!fs.existsSync(dir)) await cmdInit(['--quiet']);
+  const serverEntry = path.join(PLUGIN_ROOT, 'server/index.mjs');
+  const child = spawn(process.execPath, [serverEntry], {
+    env: {
+      ...process.env,
+      STUDYGROUND_DIR: dir,
+      STUDYGROUND_PORT: String(port),
+      CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
+    },
+    stdio: 'inherit',
+  });
+  const forward = (sig) => {
+    if (!child.killed) child.kill(sig);
+  };
+  process.on('SIGINT', () => forward('SIGINT'));
+  process.on('SIGTERM', () => forward('SIGTERM'));
+  process.on('SIGHUP', () => forward('SIGHUP'));
+  child.on('exit', (code) => process.exit(code ?? 0));
+}
+
+async function cmdDoctor() {
+  const dir = getStudygroundDir();
+  const checks = [];
+  checks.push(['claude CLI on PATH', await which('claude')]);
+  checks.push(['node >= 20', Number(process.versions.node.split('.')[0]) >= 20]);
+  checks.push([`studyground dir writable (${dir})`, canWrite(dir)]);
+  const env = isWSL() ? 'WSL (vscode:// uses vscode-remote scheme)' : process.platform;
+  checks.push(['environment', env]);
+  for (const [name, val] of checks) {
+    const ok = val === true || (typeof val === 'string' && val.length > 0);
+    console.log(`${ok ? '✓' : '✗'} ${name}: ${val}`);
+  }
+}
+
+async function cmdOpen(args) {
+  const port = getPort();
+  const slug = args[0] ? `#/l/${args[0]}` : '';
+  const url = `http://localhost:${port}/${slug}`;
+  const opener =
+    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
+  console.log(url);
+}
+
+function which(bin) {
+  return new Promise((res) => {
+    const p = spawn(process.platform === 'win32' ? 'where' : 'which', [bin], {
+      stdio: 'ignore',
+    });
+    p.on('exit', (code) => res(code === 0));
+  });
+}
+
+function canWrite(p) {
+  try {
+    if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+    const probe = path.join(p, `.write-probe-${Date.now()}`);
+    fs.writeFileSync(probe, '');
+    fs.unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isWSL() {
+  try {
+    return fs
+      .readFileSync('/proc/version', 'utf8')
+      .toLowerCase()
+      .includes('microsoft');
+  } catch {
+    return false;
+  }
+}

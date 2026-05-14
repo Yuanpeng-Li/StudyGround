@@ -1,0 +1,13 @@
+{
+  "name": "studyground",
+  "version": "1.0.0",
+  "description": "A Claude Code plugin for AI-assisted learning. Read rendered lessons in a local web reader. Ask questions inline. Run Python code in the browser. Code along in VSCode.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "studyground",
+  "version": "0.1.0",
+  "description": "Learn by reading rendered lessons in a local web reader, with Claude Code as the tutor and VSCode for hands-on coding.",
+  "author": { "name": "studyground" },
+  "license": "MIT",
+  "keywords": ["learning", "study", "education", "ai", "markdown", "katex"],
+  "userConfig": {
+    "studyground_dir": {
+      "type": "directory",
+      "title": "Studyground directory",
+      "description": "Where lessons, exercises, and progress are stored.",
+      "default": "~/studyground"
+    },
+    "web_port": {
+      "type": "number",
+      "title": "Local web port",
+      "description": "Port for the local reader UI.",
+      "default": 4321
+    }
+  }
+}
