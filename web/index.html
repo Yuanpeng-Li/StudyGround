@@ -19,38 +19,152 @@
     />
   </head>
   <body>
-    <div class="app">
-      <aside id="sidebar">
-        <div class="sidebar-brand">studyground</div>
-        <div class="sidebar-section">
-          <div class="sidebar-section-label" id="track-label">no track yet</div>
-          <ul class="sidebar-lessons" id="sidebar-lessons"></ul>
+    <!-- HOME VIEW -->
+    <div id="view-home" class="view">
+      <header class="home-header">
+        <h1 class="brand">studyground</h1>
+        <div class="home-actions">
+          <button class="theme-toggle" title="theme (click to cycle auto/light/dark)" aria-label="theme">auto</button>
         </div>
-        <div class="sidebar-section">
-          <div class="sidebar-section-label">outline</div>
-          <ul class="sidebar-outline" id="sidebar-outline">
-            <li class="hint">pick a lesson →</li>
-          </ul>
-        </div>
-      </aside>
-
-      <div class="content">
-        <header>
-          <h1 id="lesson-title-bar"></h1>
-          <div class="actions">
-            <button id="btn-recap" title="Fold answered Q&A in this lesson">Recap</button>
-            <button id="btn-next">Next →</button>
+      </header>
+      <main class="home-main">
+        <div class="home-hero">
+          <h2>Your courses</h2>
+          <p>Each course holds reading materials, lessons, and side chats. Claude is your tutor.</p>
+          <div class="home-hero-actions">
+            <button class="link-btn" data-action="import-track">Import a course (.tgz)…</button>
           </div>
-        </header>
-        <main id="lesson-view">
-          <p class="hint">Pick a lesson, or click <b>Next →</b> to generate one.</p>
-        </main>
+        </div>
+        <div class="track-grid" id="track-grid">
+          <p class="hint" style="grid-column:1/-1">loading…</p>
+        </div>
+      </main>
+    </div>
+
+    <!-- INTAKE VIEW -->
+    <div id="view-intake" class="view" hidden>
+      <header class="home-header">
+        <a href="#/" class="brand-link">studyground</a>
+        <span class="intake-track-name" id="intake-track-name">planning…</span>
+        <button class="theme-toggle" title="theme">auto</button>
+      </header>
+      <main class="intake-main">
+        <div class="intake-hero">
+          <h2>Meet your tutor</h2>
+          <p class="intake-sub">Talk to them like a real person — what you want to be able to do, what you've already tried, what you've read. They'll draft a curriculum once there's enough to go on; or hit <b>Plan curriculum →</b> yourself whenever you're ready.</p>
+        </div>
+        <div id="intake-messages" class="intake-messages"></div>
+        <form id="intake-form" class="intake-form">
+          <textarea id="intake-input" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
+          <div class="intake-actions">
+            <button type="submit" class="primary">Send</button>
+            <button type="button" id="btn-finalize" data-action="finalize-intake">Plan curriculum →</button>
+            <button type="button" data-action="skip-intake" class="link">skip for now</button>
+          </div>
+        </form>
+      </main>
+    </div>
+
+    <!-- READER VIEW -->
+    <div id="view-reader" class="view" hidden>
+      <div class="app">
+        <aside id="sidebar">
+          <a href="#/" class="sidebar-back" data-action="go-home">← all courses</a>
+          <div class="sidebar-brand">studyground</div>
+          <div class="sidebar-section">
+            <div class="sidebar-section-label" id="track-label">no track yet</div>
+            <ul class="sidebar-lessons" id="sidebar-lessons"></ul>
+          </div>
+          <div class="sidebar-section">
+            <div class="sidebar-section-label sidebar-section-head">
+              <span>materials</span>
+              <button class="sidebar-section-action" data-action="add-material" title="upload a material">＋</button>
+            </div>
+            <ul class="sidebar-materials" id="sidebar-materials">
+              <li class="hint">drop in PDFs/notes →</li>
+            </ul>
+          </div>
+          <div class="sidebar-section">
+            <div class="sidebar-section-label">outline</div>
+            <ul class="sidebar-outline" id="sidebar-outline">
+              <li class="hint">pick a lesson →</li>
+            </ul>
+          </div>
+          <div class="sidebar-section">
+            <div class="sidebar-section-label">threads</div>
+            <ul class="sidebar-threads" id="sidebar-threads">
+              <li class="hint">(no chats yet)</li>
+            </ul>
+          </div>
+        </aside>
+
+        <div class="content">
+          <header>
+            <h1 id="lesson-title-bar"></h1>
+            <div class="actions">
+              <button class="theme-toggle" title="theme (click to cycle auto/light/dark)" aria-label="theme">auto</button>
+              <button id="btn-tutor" title="Talk to your tutor about this course">💬 Tutor</button>
+              <button id="btn-recap" title="Fold answered Q&A in this lesson">Recap</button>
+              <button id="btn-next">Next →</button>
+            </div>
+          </header>
+          <main id="lesson-view">
+            <div class="lesson-empty">
+              <p class="lesson-empty-cta">
+                <button class="primary" data-action="open-tutor">💬 Talk to your tutor</button>
+                <span class="lesson-empty-cta-hint"> — they'll suggest where to go next.</span>
+              </p>
+              <p class="hint">Or pick a lesson from the sidebar · click <b>Next →</b> to generate one.</p>
+            </div>
+          </main>
+        </div>
       </div>
     </div>
 
     <footer>
       <span id="status">idle</span>
     </footer>
+
+    <div id="next-progress" hidden>
+      <div class="np-header">
+        <span class="np-spinner"></span>
+        <span class="np-title">Generating lesson…</span>
+        <button class="np-close" data-action="np-close" title="hide (Claude keeps running)">×</button>
+      </div>
+      <div class="np-tools"></div>
+      <div class="np-text"></div>
+    </div>
+
+    <!-- Command palette -->
+    <dialog id="cmd-palette" class="sg-dialog cmd-palette-dialog">
+      <input id="cmd-input" type="text" placeholder="type a command, lesson, or course… (Esc to close)" autocomplete="off" />
+      <ul id="cmd-list"></ul>
+      <div class="cmd-hint">↑↓ navigate · ↵ select · esc close</div>
+    </dialog>
+
+    <!-- New-track modal -->
+    <dialog id="new-track-dialog" class="sg-dialog">
+      <form id="new-track-form">
+        <h3>New course</h3>
+        <div class="dlg-row">
+          <label for="nt-emoji">Cover</label>
+          <input id="nt-emoji" name="emoji" maxlength="4" value="📘" autocomplete="off" />
+        </div>
+        <div class="dlg-row">
+          <label for="nt-title">Title</label>
+          <input id="nt-title" name="title" required placeholder="e.g., Linear algebra refresher" autocomplete="off" />
+        </div>
+        <div class="dlg-row">
+          <label for="nt-desc">Description</label>
+          <textarea id="nt-desc" name="description" rows="2" placeholder="optional one-liner — what's this track for?"></textarea>
+        </div>
+        <div class="dlg-actions">
+          <button type="button" data-action="close-dialog">Cancel</button>
+          <button type="submit" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="/main.js"></script>
   </body>
 </html>

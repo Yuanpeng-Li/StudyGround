@@ -39,13 +39,13 @@ async function exists(p) {
   }
 }
 
-async function extractExerciseBody({ studygroundDir, lesson, name }) {
-  const lessonPath = join(studygroundDir, 'lessons', lesson + '.md');
+async function extractExerciseBody({ studygroundDir, track, lesson, name }) {
+  const lessonPath = join(studygroundDir, 'tracks', track, 'lessons', lesson + '.md');
   let src;
   try {
     src = await readFile(lessonPath, 'utf8');
   } catch {
-    return `(lesson ${lesson} not found)`;
+    return `(lesson ${lesson} not found in track ${track})`;
   }
   const lines = src.split('\n');
   const open = `:::exercise ${name}`;
@@ -65,13 +65,15 @@ async function extractExerciseBody({ studygroundDir, lesson, name }) {
 export async function scaffoldExercise({
   studygroundDir,
   pluginRoot,
+  track,
   lesson,
   name,
 }) {
-  const exDir = join(studygroundDir, 'exercises', name);
+  if (!track) throw new Error('scaffoldExercise requires track');
+  const exDir = join(studygroundDir, 'tracks', track, 'exercises', name);
   await mkdir(exDir, { recursive: true });
 
-  const description = await extractExerciseBody({ studygroundDir, lesson, name });
+  const description = await extractExerciseBody({ studygroundDir, track, lesson, name });
   const tplDir = join(pluginRoot, 'templates/exercise-scaffold');
 
   const created = [];

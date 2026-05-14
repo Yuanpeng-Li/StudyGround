@@ -10,13 +10,16 @@ md.inline.ruler.before('escape', 'math_inline', mathInline);
 md.block.ruler.before('paragraph', 'math_block', mathBlock, {
   alt: ['paragraph', 'blockquote'],
 });
-md.renderer.rules.math_inline = (tokens, idx) =>
-  katex.renderToString(tokens[idx].content, { throwOnError: false });
-md.renderer.rules.math_block = (tokens, idx) =>
-  `<div class="math-block">${katex.renderToString(tokens[idx].content, {
-    displayMode: true,
-    throwOnError: false,
-  })}</div>`;
+md.renderer.rules.math_inline = (tokens, idx) => {
+  const latex = tokens[idx].content;
+  const html = katex.renderToString(latex, { throwOnError: false });
+  return `<span class="sg-math sg-math-inline" data-latex="${escapeHtml(latex)}">${html}</span>`;
+};
+md.renderer.rules.math_block = (tokens, idx) => {
+  const latex = tokens[idx].content;
+  const html = katex.renderToString(latex, { displayMode: true, throwOnError: false });
+  return `<div class="math-block sg-math sg-math-block" data-latex="${escapeHtml(latex)}">${html}</div>`;
+};
 
 function mathInline(state, silent) {
   if (state.src[state.pos] !== '$') return false;
@@ -81,6 +84,7 @@ md.block.ruler.before('html_block', 'sg_answer_pending', sgAnswerPending);
 md.block.ruler.before('html_block', 'sg_answer_block', sgAnswerBlock);
 md.block.ruler.before('fence', 'sg_exercise', sgExercise);
 md.block.ruler.before('html_block', 'sg_feedback', sgFeedback);
+md.block.ruler.before('html_block', 'sg_details', sgDetailsBlock);
 
 function sgQuestion(state, startLine, endLine, silent) {
   const pos = state.bMarks[startLine] + state.tShift[startLine];
@@ -176,6 +180,119 @@ function sgFeedback(state, startLine, endLine, silent) {
   return true;
 }
 
+// Match <details> at the start of a line, optionally with attributes like
+// `<details open>` or `<details class="hint">`. Capture group 1 is the
+// raw attribute string (or empty), group 2 is the remainder of the line
+// after the opening tag.
+const RE_DETAILS_OPEN = /^<details(\s[^>]*)?>(.*)$/i;
+
+// Whitelist attributes copied to the rendered <details> tag. Anything
+// else (notably event handlers like `onclick`) is dropped to keep the
+// chat panel safe even if a model emits something dodgy.
+function sanitizeDetailsAttrs(raw) {
+  if (!raw) return '';
+  const out = [];
+  // Match name or name="value" / name='value' / name=value
+  const re = /\s+([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const name = m[1].toLowerCase();
+    const value = m[2] ?? m[3] ?? m[4] ?? null;
+    if (name === 'open') {
+      out.push(' open');
+    } else if (name === 'class' || name === 'id') {
+      if (value != null) {
+        out.push(` ${name}="${String(value).replace(/"/g, '&quot;')}"`);
+      }
+    }
+    // silently drop everything else
+  }
+  return out.join('');
+}
+
+function sgDetailsBlock(state, startLine, endLine, silent) {
+  const startPos = state.bMarks[startLine] + state.tShift[startLine];
+  const startMax = state.eMarks[startLine];
+  const startText = state.src.slice(startPos, startMax);
+  const openMatch = startText.match(RE_DETAILS_OPEN);
+  if (!openMatch) return false;
+  const attrs = sanitizeDetailsAttrs(openMatch[1] || '');
+  const sameLineRest = openMatch[2] || '';
+
+  // Case A: the opening line already contains </details> — a single-line
+  // <details>...</details> block. Treat it like a normal block: parse
+  // everything between the tags as markdown so $math$, code, etc.
+  // render properly.
+  const sameLineCloseIdx = sameLineRest.toLowerCase().lastIndexOf('</details>');
+  if (sameLineCloseIdx >= 0) {
+    if (silent) return true;
+    const inner = sameLineRest.slice(0, sameLineCloseIdx);
+    const { summary: sumA, body: bodyA } = splitSummary(inner);
+    const tok = state.push('sg_details', 'div', 0);
+    tok.attrSet('data-summary', sumA);
+    tok.attrSet('data-attrs', attrs);
+    tok.content = bodyA;
+    tok.map = [startLine, startLine + 1];
+    state.line = startLine + 1;
+    return true;
+  }
+
+  // Case B: multi-line. Find the closing </details> line.
+  let endIdx = -1;
+  let endRestBefore = '';
+  for (let i = startLine + 1; i < endLine; i++) {
+    const p = state.bMarks[i] + state.tShift[i];
+    const e = state.eMarks[i];
+    const line = state.src.slice(p, e);
+    const closeIdx = line.toLowerCase().indexOf('</details>');
+    if (closeIdx >= 0) {
+      endIdx = i;
+      endRestBefore = line.slice(0, closeIdx);
+      break;
+    }
+  }
+  if (endIdx < 0) return false;
+  if (silent) return true;
+
+  // Collect inner source:
+  //   - any text on the opening line after `<details ...>`
+  //   - all whole lines between (startLine+1 .. endIdx-1)
+  //   - any text on the closing line before `</details>`
+  const middle = endIdx > startLine + 1
+    ? state.src.slice(state.bMarks[startLine + 1], state.bMarks[endIdx])
+    : '';
+  // Stitch with newlines so `$math$` etc. parse correctly. If sameLineRest
+  // has content (e.g. `<details><summary>x</summary>$y$`), preserve it
+  // as the first line of inner.
+  let stitched = '';
+  if (sameLineRest) stitched += sameLineRest + '\n';
+  stitched += middle;
+  if (endRestBefore && endRestBefore.trim()) {
+    if (!stitched.endsWith('\n')) stitched += '\n';
+    stitched += endRestBefore + '\n';
+  }
+
+  const { summary, body } = splitSummary(stitched);
+  const tok = state.push('sg_details', 'div', 0);
+  tok.attrSet('data-summary', summary);
+  tok.attrSet('data-attrs', attrs);
+  tok.content = body;
+  tok.map = [startLine, endIdx + 1];
+  state.line = endIdx + 1;
+  return true;
+}
+
+// Pull out the first <summary>...</summary> (if any) from the raw inner
+// text. The summary may be on its own line or inline. Returns the
+// summary HTML (string, may be empty) and the remaining body.
+function splitSummary(raw) {
+  // Try a non-greedy match anywhere near the start, but only consume it
+  // if it is the first non-whitespace content.
+  const m = raw.match(/^[\s]*<summary>([\s\S]*?)<\/summary>[ \t]*\n?/i);
+  if (!m) return { summary: '', body: raw.replace(/^[\s]*\n/, '') };
+  return { summary: m[1].trim(), body: raw.slice(m[0].length) };
+}
+
 function sgExercise(state, startLine, endLine, silent) {
   const pos = state.bMarks[startLine] + state.tShift[startLine];
   const max = state.eMarks[startLine];
@@ -210,9 +327,13 @@ md.renderer.rules.sg_question = (tokens, idx) => {
   const index = t.attrGet('data-index');
   const escaped = escapeHtml(text);
   const label = kind === 'btw' ? 'btw' : 'q';
+  const dig = kind === 'btw'
+    ? `<button class="sg-q-dig" data-action="dig-deeper" data-question="${escapeHtml(text)}" title="dig deeper into this">dig deeper</button>`
+    : '';
   return `<div class="sg-question ${kind}" data-index="${index}" data-kind="${kind}">
     <span class="sg-q-label">${label}</span>
     <span class="sg-q-text">${escaped}</span>
+    ${dig}
   </div>\n`;
 };
 
@@ -229,6 +350,21 @@ md.renderer.rules.sg_answer_block = (tokens, idx) => {
   const index = t.attrGet('data-index');
   const rendered = md.render(t.content, {}); // recursive — fresh env so it doesn't pollute counters
   return `<div class="sg-answer answered" data-index="${index}">${rendered}</div>\n`;
+};
+
+md.renderer.rules.sg_details = (tokens, idx) => {
+  const t = tokens[idx];
+  const summary = t.attrGet('data-summary') || 'details';
+  const attrs = t.attrGet('data-attrs') || '';
+  // Render the body as full markdown so `$...$`, `$$...$$`, code fences,
+  // and other block constructs work inside <details>.
+  const inner = md.render(t.content || '', {});
+  // Render the summary line as inline markdown too (so $math$ in summary works)
+  const summaryRendered = md.renderInline(summary, {});
+  return `<details${attrs}>
+    <summary>${summaryRendered}</summary>
+    ${inner}
+  </details>\n`;
 };
 
 md.renderer.rules.sg_feedback = (tokens, idx) => {
@@ -252,7 +388,7 @@ md.renderer.rules.sg_exercise = (tokens, idx) => {
       <code class="sg-ex-name">${safeName}</code>
       <span class="sg-ex-actions">
         <button class="sg-ex-open" data-action="open-exercise" data-name="${safeName}">Open in VSCode</button>
-        <button class="sg-ex-check" data-action="check-exercise" data-name="${safeName}">Check</button>
+        <button class="sg-ex-check" data-action="check-exercise" data-name="${safeName}" title="review your solution + run tests if test_main.py exists">Check &amp; run</button>
       </span>
     </div>
     <div class="sg-ex-body">${inner}</div>
@@ -286,10 +422,51 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Expose md.render for tests (Playwright). Harmless in production —
+// it lets the test verify the exact pipeline the chat panel uses.
+if (typeof window !== 'undefined') {
+  window.__mdRender = (text) => md.render(text, {});
+}
+
 // ---------- App state ----------
+// ---------- Theme toggle (works for any .theme-toggle on the page) ----------
+const THEMES = ['auto', 'light', 'dark'];
+const THEME_LABEL = { auto: 'auto', light: 'light', dark: 'dark' };
+function getStoredTheme() {
+  return localStorage.getItem('sg-theme') || 'auto';
+}
+function applyTheme(theme) {
+  const root = document.documentElement;
+  const actual = theme === 'auto'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : theme;
+  root.setAttribute('data-theme', actual);
+  for (const btn of document.querySelectorAll('.theme-toggle')) {
+    btn.textContent = THEME_LABEL[theme];
+  }
+}
+applyTheme(getStoredTheme());
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (getStoredTheme() === 'auto') applyTheme('auto');
+});
+document.addEventListener('DOMContentLoaded', () => {
+  for (const btn of document.querySelectorAll('.theme-toggle')) {
+    btn.textContent = THEME_LABEL[getStoredTheme()];
+  }
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.theme-toggle');
+    if (!btn) return;
+    const cur = getStoredTheme();
+    const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+    localStorage.setItem('sg-theme', next);
+    applyTheme(next);
+  });
+});
+
 const view = document.getElementById('lesson-view');
 const sidebarLessons = document.getElementById('sidebar-lessons');
 const sidebarOutline = document.getElementById('sidebar-outline');
+const sidebarThreads = document.getElementById('sidebar-threads');
 const trackLabel = document.getElementById('track-label');
 const lessonTitleBar = document.getElementById('lesson-title-bar');
 const btnNext = document.getElementById('btn-next');
@@ -316,14 +493,27 @@ function stripFrontmatter(text) {
 }
 
 let _allLessons = [];
+let _lessonDetails = {}; // slug -> summary
 let _progress = { current_track: null, tracks: {} };
+let currentTrack = null;
 
 async function loadList() {
+  const wantDetail = !!currentTrack;
+  const lessonsUrl = currentTrack
+    ? `/api/lessons?track=${encodeURIComponent(currentTrack)}&detail=1`
+    : '/api/lessons';
   const [lessonsRes, progressRes] = await Promise.all([
-    fetch('/api/lessons').then((r) => r.json()),
+    fetch(lessonsUrl).then((r) => r.json()),
     fetch('/api/progress').then((r) => r.json()),
   ]);
-  _allLessons = lessonsRes.lessons || [];
+  const rawLessons = lessonsRes.lessons || [];
+  if (wantDetail && rawLessons.length && typeof rawLessons[0] === 'object') {
+    _allLessons = rawLessons.map((l) => l.slug);
+    _lessonDetails = Object.fromEntries(rawLessons.map((l) => [l.slug, l.summary || {}]));
+  } else {
+    _allLessons = rawLessons;
+    _lessonDetails = {};
+  }
   _progress = progressRes;
   renderSidebarLessons();
   return _allLessons;
@@ -356,9 +546,29 @@ function renderSidebarLessons() {
         .filter(Boolean)
         .join(' ');
       const label = slug.replace(/^\d+-/, '').replace(/-/g, ' ');
-      return `<li><a href="#" data-action="pick-lesson" data-slug="${escapeHtml(slug)}" class="${cls}" title="${escapeHtml(slug)}">${escapeHtml(label)}</a></li>`;
+      const summary = _lessonDetails[slug];
+      const pct = lessonProgressPct(slug, summary, isCompleted);
+      const bar = pct !== null
+        ? `<span class="lesson-progress" title="${pct}% read"><span class="lesson-progress-fill" style="width:${pct}%"></span></span>`
+        : '';
+      return `<li><a href="#" data-action="pick-lesson" data-slug="${escapeHtml(slug)}" class="${cls}" title="${escapeHtml(slug)}">
+        <span class="lesson-label">${escapeHtml(label)}</span>
+        ${bar}
+      </a></li>`;
     })
     .join('');
+}
+
+function lessonProgressPct(slug, summary, isCompleted) {
+  if (isCompleted) return 100;
+  if (!summary) return null;
+  const totalAsk = summary.ask_total || 0;
+  const totalEx = summary.exercises || 0;
+  const totalUnits = totalAsk + totalEx;
+  if (totalUnits === 0) return null;
+  const doneAsk = summary.ask_answered || 0;
+  const doneEx = summary.feedbacks || 0;
+  return Math.min(100, Math.round(((doneAsk + doneEx) / totalUnits) * 100));
 }
 
 function buildOutline() {
@@ -379,10 +589,195 @@ function buildOutline() {
   sidebarOutline.innerHTML = items
     .map(
       (it) =>
-        `<li><a href="#${it.id}" data-action="jump-section" data-id="${it.id}" class="outline-${it.level === 'H2' ? 2 : 3}">${escapeHtml(it.text)}</a></li>`,
+        `<li class="outline-li">
+          <a href="#${it.id}" data-action="jump-section" data-id="${it.id}" class="outline-${it.level === 'H2' ? 2 : 3}">${escapeHtml(it.text)}</a>
+          <button class="outline-btw" data-action="btw-outline" data-id="${it.id}" title="btw — chat about this section">btw</button>
+        </li>`,
     )
     .join('');
   setupSectionObserver(items);
+}
+
+async function loadMaterials() {
+  const list = document.getElementById('sidebar-materials');
+  if (!list) return;
+  if (!currentTrack) {
+    list.innerHTML = '<li class="hint">(pick a course)</li>';
+    return;
+  }
+  try {
+    const r = await fetch(`/api/tracks/${encodeURIComponent(currentTrack)}/materials`).then((r) => r.json());
+    const mats = r.materials || [];
+    if (!mats.length) {
+      list.innerHTML = '<li class="hint">drop in PDFs/notes →</li>';
+      return;
+    }
+    list.innerHTML = mats
+      .map((m) => {
+        const sizeKb = m.size < 1024 ? `${m.size}B` : `${(m.size / 1024).toFixed(1)}K`;
+        return `<li><div class="material-item">
+          <span class="material-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</span>
+          <span class="material-size">${sizeKb}</span>
+          <button class="material-del" data-action="delete-material" data-name="${escapeHtml(m.name)}" title="delete" aria-label="delete">×</button>
+        </div></li>`;
+      })
+      .join('');
+  } catch {}
+}
+
+async function uploadMaterial(file) {
+  if (!currentTrack || !file) return;
+  setStatus(`uploading ${file.name}…`);
+  try {
+    const buf = await file.arrayBuffer();
+    const url = `/api/tracks/${encodeURIComponent(currentTrack)}/materials?name=${encodeURIComponent(file.name)}`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    }).then((r) => r.json());
+    if (!r.ok) throw new Error(r.error || 'upload failed');
+    setStatus(`uploaded ${r.name}`);
+    loadMaterials();
+  } catch (e) {
+    setStatus('upload error: ' + e.message);
+  }
+}
+
+async function deleteMaterial(name) {
+  if (!currentTrack || !name) return;
+  if (!confirm(`Delete material "${name}"?`)) return;
+  try {
+    const r = await fetch(`/api/tracks/${encodeURIComponent(currentTrack)}/materials/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) => r.json());
+    if (!r.ok) throw new Error(r.error || 'delete failed');
+    setStatus(`deleted ${name}`);
+    loadMaterials();
+  } catch (e) {
+    setStatus('delete error: ' + e.message);
+  }
+}
+
+// Hidden file input for material upload
+const materialFileInput = document.createElement('input');
+materialFileInput.type = 'file';
+materialFileInput.multiple = true;
+materialFileInput.style.display = 'none';
+materialFileInput.addEventListener('change', async (ev) => {
+  for (const f of ev.target.files) await uploadMaterial(f);
+  ev.target.value = '';
+});
+document.body.appendChild(materialFileInput);
+
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'add-material') {
+    ev.preventDefault();
+    materialFileInput.click();
+  } else if (btn.dataset.action === 'delete-material') {
+    ev.preventDefault();
+    deleteMaterial(btn.dataset.name);
+  }
+});
+
+async function loadThreads() {
+  if (!sidebarThreads) return;
+  if (!currentSlug) {
+    sidebarThreads.innerHTML = '<li class="hint">(pick a lesson)</li>';
+    return;
+  }
+  try {
+    const r = await fetch(
+      '/api/threads?lesson=' + encodeURIComponent(currentSlug)
+      + (currentTrack ? '&track=' + encodeURIComponent(currentTrack) : ''),
+    ).then((r) => r.json());
+    const threads = r.threads || [];
+    if (!threads.length) {
+      sidebarThreads.innerHTML = '<li class="hint">(no chats yet)</li>';
+      return;
+    }
+    sidebarThreads.innerHTML = threads
+      .map((t) => {
+        const preview = (t.first_question || t.selection || '').slice(0, 60);
+        const ago = relTime(t.updated_at);
+        return `<li class="thread-li">
+          <button class="thread-item" data-action="open-thread" data-id="${escapeHtml(t.id)}" title="${escapeHtml(t.selection || '')}">
+            <span class="thread-preview">${escapeHtml(preview)}</span>
+            <span class="thread-meta">${t.turns}T · ${ago}</span>
+          </button>
+          <div class="thread-actions">
+            <button class="thread-act" data-action="download-thread" data-id="${escapeHtml(t.id)}" title="download .md" aria-label="download">⬇</button>
+            <button class="thread-act" data-action="delete-thread" data-id="${escapeHtml(t.id)}" title="delete" aria-label="delete">×</button>
+          </div>
+        </li>`;
+      })
+      .join('');
+  } catch {}
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  const sec = Math.round((Date.now() - t) / 1000);
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
+
+async function openThreadById(id) {
+  const r = await fetch('/api/thread/' + encodeURIComponent(id)).then((r) => r.json());
+  if (!r.ok || !r.thread) {
+    setStatus('thread not found');
+    return;
+  }
+  if (r.thread.lesson !== currentSlug) {
+    await loadLesson(r.thread.lesson);
+  }
+  openChatPanel(r.thread.selection, r.thread);
+  // Wait for next paint so the lesson DOM is settled, then highlight
+  requestAnimationFrame(() => {
+    setTimeout(() => highlightSelectionInLesson(r.thread.selection), 80);
+  });
+}
+
+function highlightSelectionInLesson(text) {
+  if (!text) return;
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const target = norm(text).slice(0, 80);
+  if (!target) return;
+  // Pick text-bearing elements where we'd find the original selection
+  const candidates = view.querySelectorAll(
+    'p, li, h1, h2, h3, blockquote, .sg-q-text, .sg-answer.answered, details, pre, .sg-ex-body',
+  );
+  let best = null;
+  for (const c of candidates) {
+    if (norm(c.textContent).includes(target.slice(0, 50))) { best = c; break; }
+  }
+  if (!best) return;
+  best.classList.add('sg-flash');
+  best.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => best.classList.add('sg-flash-out'), 1700);
+  setTimeout(() => best.classList.remove('sg-flash', 'sg-flash-out'), 3400);
+}
+
+function extractSectionText(heading) {
+  if (!heading) return '';
+  const startLevel = heading.tagName === 'H2' ? 2 : 3;
+  const parts = [heading.textContent.trim()];
+  let sib = heading.nextElementSibling;
+  while (sib) {
+    const tag = sib.tagName;
+    if (tag === 'H2') break;
+    if (tag === 'H3' && startLevel === 3) break;
+    const txt = sib.textContent?.trim();
+    if (txt) parts.push(txt);
+    sib = sib.nextElementSibling;
+  }
+  // Cap to ~1500 chars so the prompt doesn't blow up; users can paraphrase further in chat
+  let joined = parts.join('\n\n');
+  if (joined.length > 1500) joined = joined.slice(0, 1500) + '…';
+  return joined;
 }
 
 let _sectionObserver = null;
@@ -428,7 +823,10 @@ async function loadLesson(slug) {
     renderSidebarLessons();
     return;
   }
-  const r = await fetch('/api/lesson/' + encodeURIComponent(slug)).then((r) => r.json());
+  const r = await fetch(
+    '/api/lesson/' + encodeURIComponent(slug) +
+    (currentTrack ? '?track=' + encodeURIComponent(currentTrack) : ''),
+  ).then((r) => r.json());
   if (!r.ok) {
     view.innerHTML = `<p class="hint">Lesson not found: ${slug}</p>`;
     return;
@@ -442,6 +840,8 @@ async function loadLesson(slug) {
   lessonTitleBar.textContent = meta.title || slug;
   buildOutline();
   renderSidebarLessons();
+  loadThreads();
+  loadMaterials();
   for (const idx of inflightAsks) {
     const block = view.querySelector(`.sg-answer.pending[data-index="${idx}"]`);
     if (block) {
@@ -536,6 +936,11 @@ view.addEventListener('click', async (ev) => {
   if (action === 'open-exercise') return onOpenExercise(ev.target);
   if (action === 'check-exercise') return onCheckExercise(ev.target);
   if (action === 'run-cell') return onRunCell(ev.target);
+  if (action === 'dig-deeper') {
+    ev.preventDefault();
+    const q = ev.target.dataset.question;
+    if (q) openChatPanel(q);
+  }
 });
 
 async function onAskClick(btn) {
@@ -555,7 +960,7 @@ async function onAskClick(btn) {
     const r = await fetch('/api/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lesson: currentSlug, index, kind, question: text }),
+      body: JSON.stringify({ track: currentTrack, lesson: currentSlug, index, kind, question: text }),
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'ask failed');
     setStatus(`q-${index} answered (${(r.duration_ms / 1000).toFixed(1)}s, $${r.cost_usd?.toFixed(3)})`);
@@ -578,7 +983,7 @@ async function onOpenExercise(btn) {
     const r = await fetch('/api/exercise/scaffold', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lesson: currentSlug, name }),
+      body: JSON.stringify({ track: currentTrack, lesson: currentSlug, name }),
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'scaffold failed');
     const created = r.created?.length ? ` (created: ${r.created.join(', ')})` : ' (already existed)';
@@ -601,7 +1006,7 @@ async function onCheckExercise(btn) {
     const r = await fetch('/api/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lesson: currentSlug, exercise: name }),
+      body: JSON.stringify({ track: currentTrack, lesson: currentSlug, exercise: name, run_tests: true }),
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'check failed');
     setStatus(`reviewed (${(r.duration_ms / 1000).toFixed(1)}s, $${r.cost_usd?.toFixed(3)})`);
@@ -634,27 +1039,197 @@ document.addEventListener('click', (ev) => {
   }
 });
 
+// Outline btw / thread open/delete/download — buttons need a separate handler
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'btw-outline') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const heading = document.getElementById(btn.dataset.id);
+    const sel = extractSectionText(heading);
+    if (sel) openChatPanel(sel);
+  } else if (action === 'open-tutor') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openTutorPanel();
+  } else if (action === 'open-thread') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openThreadById(btn.dataset.id);
+  } else if (action === 'delete-thread') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!confirm('Delete this conversation?')) return;
+    try {
+      const r = await fetch('/api/thread/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' }).then((r) => r.json());
+      if (!r.ok) throw new Error(r.error || 'delete failed');
+      // If the panel currently shows this thread, close it
+      if (threadId === btn.dataset.id) closeChatPanel();
+      loadThreads();
+      setStatus('thread deleted');
+    } catch (e) {
+      setStatus('delete error: ' + e.message);
+    }
+  } else if (action === 'download-thread') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    try {
+      const r = await fetch('/api/thread/' + encodeURIComponent(btn.dataset.id)).then((r) => r.json());
+      if (!r.ok || !r.thread) throw new Error('thread not found');
+      downloadThreadAsMd(r.thread);
+    } catch (e) {
+      setStatus('download error: ' + e.message);
+    }
+  } else if (action === 'copy-thread-md') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!threadId || !chatSelection) return;
+    const md = threadToMd({
+      id: threadId,
+      lesson: currentSlug,
+      selection: chatSelection,
+      history: chatHistory,
+      updated_at: new Date().toISOString(),
+    });
+    try {
+      await navigator.clipboard.writeText(md);
+      const b = chatPanel?.querySelector('[data-action="copy-thread-md"]');
+      if (b) {
+        const prev = b.textContent;
+        b.textContent = '✓ copied';
+        setTimeout(() => (b.textContent = prev), 1200);
+      }
+    } catch (e) {
+      setStatus('copy failed: ' + e.message);
+    }
+  }
+});
+
+function threadToMd(thread) {
+  const lines = [];
+  lines.push(`# btw chat — ${(thread.updated_at || '').slice(0, 10)}`);
+  lines.push('');
+  lines.push(`> _Selected from_ \`lessons/${thread.lesson}.md\``);
+  lines.push('>');
+  for (const line of String(thread.selection || '').split('\n')) {
+    lines.push('> ' + line);
+  }
+  lines.push('');
+  for (const m of thread.history || []) {
+    if (m.role === 'user') {
+      lines.push(`**Q:** ${m.content}`);
+    } else {
+      lines.push(m.content);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function downloadThreadAsMd(thread) {
+  const md = threadToMd(thread);
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `btw-${thread.lesson || 'thread'}-${thread.id.slice(0, 8)}.md`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    a.remove();
+  }, 100);
+}
+
+const nextProgress = document.getElementById('next-progress');
+const npTitle = nextProgress.querySelector('.np-title');
+const npTools = nextProgress.querySelector('.np-tools');
+const npText = nextProgress.querySelector('.np-text');
+nextProgress.querySelector('[data-action="np-close"]').addEventListener('click', () => {
+  nextProgress.hidden = true;
+});
+function npReset() {
+  nextProgress.classList.remove('done', 'error');
+  npTitle.textContent = 'Generating lesson…';
+  npTools.innerHTML = '';
+  npText.textContent = '';
+  nextProgress.hidden = false;
+}
+function npToolStart(name) {
+  const pill = document.createElement('span');
+  pill.className = 'np-tool pending';
+  pill.textContent = name;
+  pill.dataset.name = name;
+  npTools.appendChild(pill);
+}
+function npToolDone(name) {
+  // Mark the most recent pending pill with this name as done
+  const pending = [...npTools.querySelectorAll('.np-tool.pending')]
+    .reverse()
+    .find((el) => el.dataset.name === name);
+  if (pending) pending.classList.replace('pending', 'done');
+}
+
 btnNext.addEventListener('click', async () => {
   btnNext.disabled = true;
   const prev = btnNext.textContent;
-  btnNext.textContent = 'thinking…';
-  setStatus('generating next lesson (claude is writing)…');
+  btnNext.textContent = 'writing…';
+  npReset();
+  setStatus('generating next lesson…');
   try {
-    const r = await fetch('/api/next', {
+    const resp = await fetch('/api/next', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    }).then((r) => r.json());
-    if (!r.ok) throw new Error(r.error || 'unknown error');
-    setStatus(`generated (${(r.duration_ms / 1000).toFixed(1)}s, $${r.cost_usd?.toFixed(3)})`);
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ track: currentTrack }),
+    });
+    if (!resp.ok || !resp.body) {
+      const txt = await resp.text().catch(() => '');
+      throw new Error(`stream open failed: ${resp.status} ${txt.slice(0, 200)}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let meta = null;
+    let errMsg = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        if (!chunk.startsWith('data: ')) continue;
+        let ev;
+        try { ev = JSON.parse(chunk.slice(6)); } catch { continue; }
+        if (ev.type === 'delta') {
+          npText.textContent += ev.text;
+          npText.scrollTop = npText.scrollHeight;
+        } else if (ev.type === 'tool') {
+          if (ev.phase === 'start') npToolStart(ev.name);
+          else if (ev.phase === 'done') npToolDone(ev.name);
+        } else if (ev.type === 'done') {
+          meta = ev;
+        } else if (ev.type === 'error') {
+          errMsg = ev.error;
+        }
+      }
+    }
+    if (errMsg) throw new Error(errMsg);
+    nextProgress.classList.add('done');
+    npTitle.textContent = `✓ done (${(meta?.duration_ms / 1000).toFixed(1)}s, $${meta?.cost_usd?.toFixed(3)})`;
+    setStatus(`generated (${(meta?.duration_ms / 1000).toFixed(1)}s, $${meta?.cost_usd?.toFixed(3)})`);
+    setTimeout(() => { nextProgress.hidden = true; }, 2200);
+
     const lessons = await loadList();
     const newest = lessons[lessons.length - 1];
-    if (newest) {
-      await loadLesson(newest);
-    }
+    if (newest) await loadLesson(newest);
   } catch (e) {
+    nextProgress.classList.add('error');
+    npTitle.textContent = '✗ ' + e.message.slice(0, 60);
     setStatus('error: ' + e.message);
-    alert('next failed: ' + e.message);
   } finally {
     btnNext.disabled = false;
     btnNext.textContent = prev;
@@ -666,6 +1241,8 @@ let selToolbar = null;
 let chatPanel = null;
 let chatHistory = [];
 let chatSelection = '';
+let threadId = null;
+let chatMode = 'btw'; // 'btw' | 'tutor'
 
 function ensureSelToolbar() {
   if (selToolbar) return selToolbar;
@@ -686,6 +1263,54 @@ function ensureSelToolbar() {
 function hideSelToolbar() {
   if (selToolbar) selToolbar.classList.remove('show');
 }
+
+// Substitute LaTeX source on copy when selection contains rendered math.
+document.addEventListener('copy', (ev) => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  // Only intercept when the selection is inside a lesson view / chat / intake
+  const anchor = sel.anchorNode;
+  if (!anchor) return;
+  const inMath =
+    (view && view.contains(anchor)) ||
+    (chatPanel && chatPanel.contains(anchor)) ||
+    document.getElementById('view-intake')?.contains(anchor);
+  if (!inMath) return;
+
+  // Clone the selected content and replace math nodes with $...$ / $$...$$
+  const range = sel.getRangeAt(0);
+  const frag = range.cloneContents();
+  const walker = document.createTreeWalker(frag, NodeFilter.SHOW_ELEMENT);
+  const toReplace = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.classList && node.classList.contains('sg-math')) toReplace.push(node);
+  }
+  let hadMath = false;
+  for (const el of toReplace) {
+    const latex = el.getAttribute('data-latex') || '';
+    const isBlock = el.classList.contains('sg-math-block');
+    const wrapped = isBlock ? `$$${latex}$$` : `$${latex}$`;
+    el.replaceWith(document.createTextNode(wrapped));
+    hadMath = true;
+  }
+  if (!hadMath) return; // let the default copy work for plain text
+
+  // Serialize with reasonable block-level newlines by attaching off-screen briefly
+  const tmp = document.createElement('div');
+  tmp.style.cssText = 'position:absolute;left:-99999px;top:0;white-space:pre-wrap;';
+  tmp.appendChild(frag);
+  document.body.appendChild(tmp);
+  const text = tmp.innerText;
+  tmp.remove();
+
+  try {
+    ev.clipboardData.setData('text/plain', text);
+    ev.preventDefault();
+  } catch {
+    // If clipboardData unavailable, fall through to default
+  }
+});
 
 document.addEventListener('selectionchange', () => {
   const sel = window.getSelection();
@@ -715,6 +1340,7 @@ function ensureChatPanel() {
     <div class="sg-chat-head">
       <span class="sg-chat-title">btw</span>
       <div class="sg-chat-head-actions">
+        <button class="sg-chat-copy" data-action="copy-thread-md" title="copy this conversation as markdown">copy md</button>
         <button class="sg-chat-save" data-action="save-chat" title="save this conversation as a ?>> block in the lesson" disabled>Save to lesson</button>
         <button class="sg-chat-close" data-action="close-chat" title="close (Esc)">×</button>
       </div>
@@ -736,29 +1362,80 @@ function ensureChatPanel() {
   return chatPanel;
 }
 
-function openChatPanel(selection) {
+function openChatPanel(selection, restoreThread = null) {
   hideSelToolbar();
   const panel = ensureChatPanel();
-  chatSelection = selection;
-  chatHistory = [];
-  panel.querySelector('.sg-chat-selection').textContent = selection;
-  panel.querySelector('.sg-chat-messages').innerHTML = '';
+  chatMode = 'btw';
+  panel.classList.remove('tutor-mode');
+  panel.querySelector('.sg-chat-title').textContent = 'btw';
+  panel.querySelector('.sg-chat-selection').style.display = '';
+  panel.querySelector('.sg-chat-save').style.display = '';
+  if (restoreThread) {
+    chatSelection = restoreThread.selection || selection;
+    chatHistory = (restoreThread.history || []).map((m) => ({ role: m.role, content: m.content }));
+    threadId = restoreThread.id;
+  } else {
+    chatSelection = selection;
+    chatHistory = [];
+    threadId = (window.crypto?.randomUUID && window.crypto.randomUUID()) || (Date.now() + '-' + Math.random().toString(36).slice(2));
+  }
+  panel.querySelector('.sg-chat-selection').textContent = chatSelection;
+  const msgs = panel.querySelector('.sg-chat-messages');
+  msgs.innerHTML = '';
+  for (const m of chatHistory) appendChatMessage(m.role, m.content);
+  panel.querySelector('input[name="q"]').placeholder = 'ask about this passage…';
+  panel.classList.add('show');
+  setChatSaveEnabled();
+  setTimeout(() => panel.querySelector('input[name="q"]').focus(), 50);
+}
+
+async function openTutorPanel() {
+  if (!currentTrack) { setStatus('open a course first'); return; }
+  hideSelToolbar();
+  const panel = ensureChatPanel();
+  chatMode = 'tutor';
+  panel.classList.add('tutor-mode');
+  panel.querySelector('.sg-chat-title').textContent = 'tutor · ' + currentTrack;
+  panel.querySelector('.sg-chat-selection').style.display = 'none';
+  panel.querySelector('.sg-chat-save').style.display = 'none';
+  chatSelection = '';
+  threadId = null;
+  // Restore persisted tutor history for this track
+  try {
+    const r = await fetch(`/api/tutor/${encodeURIComponent(currentTrack)}`).then((r) => r.json());
+    chatHistory = (r?.history || []).map((m) => ({ role: m.role, content: m.content }));
+  } catch {
+    chatHistory = [];
+  }
+  const msgs = panel.querySelector('.sg-chat-messages');
+  msgs.innerHTML = '';
+  for (const m of chatHistory) appendChatMessage(m.role, m.content);
+  panel.querySelector('input[name="q"]').placeholder = 'ask the tutor anything about this course…';
   panel.classList.add('show');
   setTimeout(() => panel.querySelector('input[name="q"]').focus(), 50);
+  // On first open (no history), trigger an opening status check
+  if (chatHistory.length === 0) {
+    sendTutorTurn(null);
+  }
 }
 
 function closeChatPanel() {
   if (chatPanel) chatPanel.classList.remove('show');
   chatHistory = [];
   chatSelection = '';
+  threadId = null;
 }
 
 async function onChatSubmit(ev) {
   ev.preventDefault();
   const input = ev.target.querySelector('input[name="q"]');
   const question = input.value.trim();
-  if (!question || !chatSelection) return;
+  if (!question) return;
+  if (chatMode === 'btw' && !chatSelection) return;
   input.value = '';
+  if (chatMode === 'tutor') {
+    return sendTutorTurn(question);
+  }
   input.disabled = true;
   const submitBtn = ev.target.querySelector('button[type="submit"]');
   submitBtn.disabled = true;
@@ -772,10 +1449,12 @@ async function onChatSubmit(ev) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify({
+        track: currentTrack,
         lesson: currentSlug,
         selection: chatSelection,
         question,
         history: historyBefore,
+        thread_id: threadId,
       }),
     });
     if (!resp.ok || !resp.body) {
@@ -825,12 +1504,89 @@ async function onChatSubmit(ev) {
     chatHistory.push({ role: 'assistant', content: fullText });
     setChatSaveEnabled();
     if (meta) {
+      // server may have created a thread_id if we didn't supply one
+      if (meta.thread_id) threadId = meta.thread_id;
       setStatus(`btw answered (${(meta.duration_ms / 1000).toFixed(1)}s, $${meta.cost_usd?.toFixed(3)})`);
     }
+    loadThreads();
   } catch (e) {
     placeholder.textContent = '✗ ' + e.message;
     placeholder.classList.add('error');
     setStatus('btw error: ' + e.message);
+  } finally {
+    input.disabled = false;
+    submitBtn.disabled = false;
+    input.focus();
+  }
+}
+
+async function sendTutorTurn(userMessage) {
+  const panel = chatPanel;
+  const input = panel.querySelector('input[name="q"]');
+  const submitBtn = panel.querySelector('button[type="submit"]');
+  input.disabled = true;
+  submitBtn.disabled = true;
+  if (userMessage) {
+    appendChatMessage('user', userMessage);
+    chatHistory.push({ role: 'user', content: userMessage });
+  }
+  const placeholder = appendChatMessage('assistant', '…');
+  placeholder.classList.add('streaming');
+  setStatus('tutor thinking…');
+  const historyBefore = userMessage ? chatHistory.slice(0, -1) : chatHistory.slice();
+  try {
+    const resp = await fetch('/api/tutor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({
+        track: currentTrack,
+        user_message: userMessage,
+        history: historyBefore,
+      }),
+    });
+    if (!resp.ok || !resp.body) {
+      const t = await resp.text().catch(() => '');
+      throw new Error(`stream open failed: ${resp.status} ${t.slice(0, 200)}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let fullText = '';
+    let meta = null;
+    let errMsg = null;
+    placeholder.textContent = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        if (!chunk.startsWith('data: ')) continue;
+        let ev;
+        try { ev = JSON.parse(chunk.slice(6)); } catch { continue; }
+        if (ev.type === 'delta') {
+          fullText += ev.text;
+          placeholder.innerHTML = md.render(fullText, {});
+          const msgs = panel.querySelector('.sg-chat-messages');
+          msgs.scrollTop = msgs.scrollHeight;
+        } else if (ev.type === 'done') {
+          meta = ev;
+        } else if (ev.type === 'error') {
+          errMsg = ev.error;
+        }
+      }
+    }
+    placeholder.classList.remove('streaming');
+    if (errMsg) throw new Error(errMsg);
+    chatHistory.push({ role: 'assistant', content: fullText });
+    if (meta) setStatus(`tutor replied (${(meta.duration_ms / 1000).toFixed(1)}s, $${meta.cost_usd?.toFixed(3)})`);
+  } catch (e) {
+    placeholder.textContent = '✗ ' + e.message;
+    placeholder.classList.add('error');
+    placeholder.classList.remove('streaming');
+    setStatus('tutor error: ' + e.message);
   } finally {
     input.disabled = false;
     submitBtn.disabled = false;
@@ -873,6 +1629,7 @@ async function onSaveChat() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        track: currentTrack,
         lesson: currentSlug,
         selection: chatSelection,
         history: chatHistory,
@@ -892,6 +1649,10 @@ async function onSaveChat() {
   }
 }
 
+document.getElementById('btn-tutor').addEventListener('click', () => {
+  openTutorPanel();
+});
+
 btnRecap.addEventListener('click', async () => {
   if (!currentSlug) { setStatus('pick a lesson first'); return; }
   btnRecap.disabled = true;
@@ -902,7 +1663,7 @@ btnRecap.addEventListener('click', async () => {
     const r = await fetch('/api/recap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lesson: currentSlug }),
+      body: JSON.stringify({ track: currentTrack, lesson: currentSlug }),
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'recap failed');
     setStatus(`recap done (${(r.duration_ms / 1000).toFixed(1)}s, $${r.cost_usd?.toFixed(3)})`);
@@ -938,4 +1699,481 @@ es.addEventListener('message', (ev) => {
   }
 });
 
-loadList();
+// ---------- Router + Home ----------
+const viewHome = document.getElementById('view-home');
+const viewReader = document.getElementById('view-reader');
+const trackGrid = document.getElementById('track-grid');
+const newTrackDialog = document.getElementById('new-track-dialog');
+const newTrackForm = document.getElementById('new-track-form');
+
+function parseRoute() {
+  const hash = location.hash || '#/';
+  // #/t/<slug>/intake → intake; #/t/<slug>/ → reader
+  const intake = hash.match(/^#\/t\/([^/]+)\/intake\/?$/);
+  if (intake) return { name: 'intake', slug: decodeURIComponent(intake[1]) };
+  const reader = hash.match(/^#\/t\/([^/]+)\/?/);
+  if (reader) return { name: 'reader', slug: decodeURIComponent(reader[1]) };
+  return { name: 'home' };
+}
+
+async function route() {
+  const r = parseRoute();
+  if (r.name === 'intake') {
+    viewHome.hidden = true;
+    viewReader.hidden = true;
+    document.getElementById('view-intake').hidden = false;
+    await enterIntake(r.slug);
+    return;
+  }
+  if (r.name === 'reader') {
+    viewHome.hidden = true;
+    document.getElementById('view-intake').hidden = true;
+    viewReader.hidden = false;
+    if (currentTrack !== r.slug) {
+      currentTrack = r.slug;
+      try {
+        await fetch(`/api/tracks/${encodeURIComponent(r.slug)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'select' }),
+        });
+      } catch {}
+      const lessons = await loadList();
+      // Auto-redirect to intake if there's nothing here yet
+      if (!lessons.length) {
+        const cur = await fetch(`/api/tracks/${encodeURIComponent(r.slug)}/curriculum`).then((x) => x.json()).catch(() => null);
+        if (!cur?.ok) {
+          location.hash = `#/t/${encodeURIComponent(r.slug)}/intake`;
+          return;
+        }
+      }
+      const trackProgress = _progress.tracks?.[r.slug];
+      const target = trackProgress?.current && lessons.includes(trackProgress.current)
+        ? trackProgress.current
+        : lessons[0];
+      if (target) await loadLesson(target);
+      else {
+        currentSlug = '';
+        view.innerHTML = '<p class="hint">Curriculum is set but no lessons yet — click <b>Next →</b> to generate lesson 1.</p>';
+        lessonTitleBar.textContent = '';
+        renderSidebarLessons();
+        loadMaterials();
+        loadThreads();
+        sidebarOutline.innerHTML = '<li class="hint">(no lesson)</li>';
+      }
+    }
+  } else {
+    viewReader.hidden = true;
+    document.getElementById('view-intake').hidden = true;
+    viewHome.hidden = false;
+    currentTrack = null;
+    currentSlug = '';
+    renderHome();
+  }
+}
+
+// ---------- intake view ----------
+let intakeTrack = null;
+let intakeHistory = [];
+const intakeMessagesEl = () => document.getElementById('intake-messages');
+
+async function enterIntake(slug) {
+  intakeTrack = slug;
+  intakeHistory = [];
+  document.getElementById('intake-messages').innerHTML = '';
+  document.getElementById('intake-input').value = '';
+  try {
+    const meta = await fetch(`/api/tracks/${encodeURIComponent(slug)}`).then((r) => r.json());
+    document.getElementById('intake-track-name').textContent =
+      (meta?.track?.emoji ? meta.track.emoji + ' ' : '') + (meta?.track?.title || slug);
+  } catch {
+    document.getElementById('intake-track-name').textContent = slug;
+  }
+  // If curriculum already exists, just show a note + jump-to-reader button
+  const cur = await fetch(`/api/tracks/${encodeURIComponent(slug)}/curriculum`).then((r) => r.json()).catch(() => null);
+  if (cur?.ok) {
+    const msgs = document.getElementById('intake-messages');
+    msgs.innerHTML = `<div class="intake-msg assistant">
+      <p>This course already has a curriculum. Continue chatting to refine it, or jump straight to reading.</p>
+      <p><a href="#/t/${encodeURIComponent(slug)}/">→ Open reader</a></p>
+    </div>`;
+  }
+  // Kick off the first question
+  await sendIntakeTurn(null, false);
+  setTimeout(() => document.getElementById('intake-input').focus(), 50);
+}
+
+async function sendIntakeTurn(userMessage, finalize) {
+  if (userMessage) {
+    intakeHistory.push({ role: 'user', content: userMessage });
+    appendIntakeMsg('user', userMessage);
+  }
+  const placeholder = appendIntakeMsg('assistant', '…');
+  placeholder.classList.add('streaming');
+  setStatus(finalize ? 'finalizing curriculum…' : 'intake (thinking…)');
+
+  const historyBefore = intakeHistory.filter((m) => m.role === 'assistant' || (userMessage && m.content !== userMessage));
+  // Send history WITHOUT the just-pushed user message (server adds it via user_message)
+  const histPayload = userMessage ? intakeHistory.slice(0, -1) : intakeHistory.slice();
+
+  try {
+    const resp = await fetch('/api/intake', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({
+        track: intakeTrack,
+        user_message: userMessage,
+        history: histPayload,
+        action: finalize ? 'finalize' : 'ask',
+      }),
+    });
+    if (!resp.ok || !resp.body) {
+      const txt = await resp.text().catch(() => '');
+      throw new Error(`stream open failed: ${resp.status} ${txt.slice(0, 200)}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let fullText = '';
+    let meta = null;
+    let errMsg = null;
+    placeholder.textContent = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        if (!chunk.startsWith('data: ')) continue;
+        let ev;
+        try { ev = JSON.parse(chunk.slice(6)); } catch { continue; }
+        if (ev.type === 'delta') {
+          fullText += ev.text;
+          placeholder.innerHTML = md.render(fullText, {});
+          window.scrollTo({ top: document.body.scrollHeight });
+        } else if (ev.type === 'done') {
+          meta = ev;
+        } else if (ev.type === 'error') {
+          errMsg = ev.error;
+        }
+      }
+    }
+    placeholder.classList.remove('streaming');
+    if (errMsg) throw new Error(errMsg);
+    if (!fullText && meta?.full_text) {
+      fullText = meta.full_text;
+      placeholder.innerHTML = md.render(fullText, {});
+    }
+    intakeHistory.push({ role: 'assistant', content: fullText });
+    setStatus(`intake (${(meta?.duration_ms / 1000).toFixed(1)}s, $${meta?.cost_usd?.toFixed(3)})`);
+    if (finalize) {
+      setStatus('curriculum saved');
+      setTimeout(() => { location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`; }, 1400);
+    }
+  } catch (e) {
+    placeholder.textContent = '✗ ' + e.message;
+    placeholder.classList.add('error', 'streaming');
+    placeholder.classList.remove('streaming');
+    setStatus('intake error: ' + e.message);
+  }
+}
+
+function appendIntakeMsg(role, content) {
+  const msg = document.createElement('div');
+  msg.className = `intake-msg ${role}`;
+  if (role === 'assistant' && content !== '…') {
+    msg.innerHTML = md.render(content, {});
+  } else {
+    msg.textContent = content;
+  }
+  document.getElementById('intake-messages').appendChild(msg);
+  return msg;
+}
+
+document.getElementById('intake-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('intake-input');
+  const val = input.value.trim();
+  if (!val) return;
+  input.value = '';
+  sendIntakeTurn(val, false);
+});
+
+// "Plan curriculum →" and "skip intake" buttons
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'finalize-intake') {
+    ev.preventDefault();
+    const pendingMsg = document.getElementById('intake-input').value.trim();
+    document.getElementById('intake-input').value = '';
+    sendIntakeTurn(pendingMsg || null, true);
+  } else if (btn.dataset.action === 'skip-intake') {
+    ev.preventDefault();
+    if (!confirm('Skip the intake? You can come back to it later, but lesson generation will be less personalized.')) return;
+    location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`;
+  }
+});
+
+async function renderHome() {
+  trackGrid.innerHTML = '<p class="hint" style="grid-column:1/-1">loading…</p>';
+  try {
+    const r = await fetch('/api/tracks').then((r) => r.json());
+    const tracks = r.tracks || [];
+    const cards = tracks.map(trackCardHtml).join('');
+    trackGrid.innerHTML =
+      cards +
+      `<button class="track-card create" data-action="open-new-track">
+        <span class="track-emoji">+</span>
+        <span class="track-title">New course</span>
+        <span class="track-desc">Set a title, drop in materials, start reading.</span>
+      </button>`;
+  } catch (e) {
+    trackGrid.innerHTML = `<p class="hint" style="grid-column:1/-1">failed to load tracks: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function trackCardHtml(t) {
+  const meta = `${t.lesson_count || 0} lessons · ${t.material_count || 0} materials`;
+  const hasDesc = (t.description || '').trim().length > 0;
+  return `<a class="track-card ${t.is_current_track ? 'current' : ''}" href="#/t/${encodeURIComponent(t.slug)}/" data-action="open-track" data-slug="${escapeHtml(t.slug)}">
+    <span class="track-card-actions">
+      <button class="track-export" data-action="export-track" data-slug="${escapeHtml(t.slug)}" title="download course as .tgz" aria-label="export">⬇</button>
+      <button class="track-delete" data-action="delete-track" data-slug="${escapeHtml(t.slug)}" title="delete course" aria-label="delete">×</button>
+    </span>
+    <span class="track-emoji">${escapeHtml(t.emoji || '📘')}</span>
+    <span class="track-title">${escapeHtml(t.title || t.slug)}</span>
+    <span class="track-desc">${hasDesc ? escapeHtml(t.description) : '<i style="opacity:0.55">no description</i>'}</span>
+    <span class="track-meta">${escapeHtml(meta)}</span>
+  </a>`;
+}
+
+document.addEventListener('click', async (ev) => {
+  const t = ev.target.closest('[data-action]');
+  if (!t) return;
+  const action = t.dataset.action;
+  if (action === 'open-new-track') {
+    ev.preventDefault();
+    newTrackDialog.showModal();
+    setTimeout(() => newTrackDialog.querySelector('#nt-title').focus(), 30);
+  } else if (action === 'close-dialog') {
+    ev.preventDefault();
+    newTrackDialog.close();
+  } else if (action === 'delete-track') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const slug = t.dataset.slug;
+    if (!confirm(`Delete course "${slug}"?\n\nThis removes the entire tracks/${slug}/ folder (lessons, exercises, materials, threads, curriculum). Irreversible.`)) return;
+    try {
+      const r = await fetch(`/api/tracks/${encodeURIComponent(slug)}`, { method: 'DELETE' }).then((r) => r.json());
+      if (!r.ok) throw new Error(r.error || 'delete failed');
+      renderHome();
+    } catch (e) {
+      alert('delete failed: ' + e.message);
+    }
+  } else if (action === 'export-track') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const slug = t.dataset.slug;
+    // Trigger download via anchor
+    const a = document.createElement('a');
+    a.href = `/api/tracks/${encodeURIComponent(slug)}/export`;
+    a.download = `${slug}.tgz`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatus(`exporting ${slug}.tgz…`);
+  } else if (action === 'import-track') {
+    ev.preventDefault();
+    importTrackFileInput.click();
+  }
+});
+
+// Hidden file input for course import
+const importTrackFileInput = document.createElement('input');
+importTrackFileInput.type = 'file';
+importTrackFileInput.accept = '.tgz,.tar.gz,application/gzip,application/x-gzip,application/octet-stream';
+importTrackFileInput.style.display = 'none';
+importTrackFileInput.addEventListener('change', async (ev) => {
+  const f = ev.target.files?.[0];
+  if (!f) return;
+  setStatus(`importing ${f.name}…`);
+  try {
+    const buf = await f.arrayBuffer();
+    const r = await fetch('/api/tracks/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/gzip' },
+      body: buf,
+    }).then((r) => r.json());
+    if (!r.ok) throw new Error(r.error || 'import failed');
+    setStatus(`imported as "${r.slug}"`);
+    location.hash = `#/t/${encodeURIComponent(r.slug)}/`;
+  } catch (e) {
+    setStatus('import error: ' + e.message);
+    alert('import failed: ' + e.message);
+  }
+  ev.target.value = '';
+});
+document.body.appendChild(importTrackFileInput);
+
+newTrackForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const fd = new FormData(newTrackForm);
+  try {
+    const r = await fetch('/api/tracks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: fd.get('title'),
+        description: fd.get('description'),
+        emoji: fd.get('emoji'),
+      }),
+    }).then((r) => r.json());
+    if (!r.ok) throw new Error(r.error || 'create failed');
+    newTrackDialog.close();
+    newTrackForm.reset();
+    document.getElementById('nt-emoji').value = '📘';
+    // Land in intake for new tracks
+    location.hash = `#/t/${encodeURIComponent(r.track.slug)}/intake`;
+  } catch (e) {
+    alert('create failed: ' + e.message);
+  }
+});
+
+// ---------- Command palette ----------
+const cmdDialog = document.getElementById('cmd-palette');
+const cmdInput = document.getElementById('cmd-input');
+const cmdList = document.getElementById('cmd-list');
+let cmdItems = [];
+let cmdActiveIdx = 0;
+
+async function buildCmdItems(query) {
+  const q = (query || '').trim().toLowerCase();
+  const items = [];
+  // Actions
+  const actions = [
+    { label: 'Go to home', icon: '⌂', run: () => (location.hash = '#/'), group: 'actions' },
+    { label: 'Cycle theme', hint: getStoredTheme(), icon: '◐', run: () => {
+        const cur = getStoredTheme();
+        const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+        localStorage.setItem('sg-theme', next); applyTheme(next);
+      }, group: 'actions' },
+  ];
+  if (currentTrack) {
+    actions.push({ label: 'Generate next lesson', icon: '＋', hint: 'streams', run: () => btnNext.click(), group: 'actions' });
+    if (currentSlug) {
+      actions.push({ label: 'Recap current lesson', icon: '↻', hint: currentSlug, run: () => btnRecap.click(), group: 'actions' });
+      actions.push({ label: 'Add material to current course', icon: '⬆', run: () => materialFileInput.click(), group: 'actions' });
+    }
+  }
+  for (const a of actions) {
+    if (!q || (a.label + ' ' + (a.hint || '')).toLowerCase().includes(q)) items.push(a);
+  }
+  // Lessons (within current track)
+  if (currentTrack && _allLessons.length) {
+    for (const slug of _allLessons) {
+      const label = 'Go to ' + slug.replace(/^\d+-/, '').replace(/-/g, ' ');
+      if (!q || (label + ' ' + slug).toLowerCase().includes(q)) {
+        items.push({ label, hint: slug, icon: '§', run: () => loadLesson(slug), group: 'lessons' });
+      }
+    }
+  }
+  // Courses (across tracks)
+  try {
+    const r = await fetch('/api/tracks').then((r) => r.json());
+    for (const t of r.tracks || []) {
+      const label = `Open course: ${t.title || t.slug}`;
+      if (!q || (label + ' ' + t.slug + ' ' + (t.description || '')).toLowerCase().includes(q)) {
+        items.push({
+          label,
+          hint: `${t.lesson_count}L · ${t.material_count}M`,
+          icon: t.emoji || '📘',
+          run: () => (location.hash = `#/t/${encodeURIComponent(t.slug)}/`),
+          group: 'courses',
+        });
+      }
+    }
+  } catch {}
+  return items;
+}
+
+function renderCmdList() {
+  if (!cmdItems.length) {
+    cmdList.innerHTML = '<li class="cmd-item" style="color:var(--text-faint)"><span class="cmd-icon">·</span><span class="cmd-label">no matches</span></li>';
+    return;
+  }
+  let html = '';
+  let prevGroup = null;
+  cmdItems.forEach((it, idx) => {
+    if (it.group !== prevGroup) {
+      html += `<li class="cmd-group-label">${escapeHtml(it.group)}</li>`;
+      prevGroup = it.group;
+    }
+    html += `<li class="cmd-item ${idx === cmdActiveIdx ? 'active' : ''}" data-idx="${idx}">
+      <span class="cmd-icon">${escapeHtml(it.icon || '·')}</span>
+      <span class="cmd-label">${escapeHtml(it.label)}</span>
+      ${it.hint ? `<span class="cmd-hint-text">${escapeHtml(it.hint)}</span>` : ''}
+    </li>`;
+  });
+  cmdList.innerHTML = html;
+}
+
+async function refreshCmd() {
+  cmdItems = await buildCmdItems(cmdInput.value);
+  cmdActiveIdx = Math.min(cmdActiveIdx, Math.max(0, cmdItems.length - 1));
+  renderCmdList();
+}
+
+function openCmdPalette() {
+  if (cmdDialog.open) return;
+  cmdInput.value = '';
+  cmdActiveIdx = 0;
+  refreshCmd().then(() => {
+    cmdDialog.showModal();
+    setTimeout(() => cmdInput.focus(), 30);
+  });
+}
+
+cmdInput.addEventListener('input', () => { cmdActiveIdx = 0; refreshCmd(); });
+cmdInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'ArrowDown') {
+    ev.preventDefault();
+    if (cmdItems.length) { cmdActiveIdx = (cmdActiveIdx + 1) % cmdItems.length; renderCmdList(); }
+  } else if (ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    if (cmdItems.length) { cmdActiveIdx = (cmdActiveIdx - 1 + cmdItems.length) % cmdItems.length; renderCmdList(); }
+  } else if (ev.key === 'Enter') {
+    ev.preventDefault();
+    const it = cmdItems[cmdActiveIdx];
+    if (it) { cmdDialog.close(); it.run(); }
+  }
+});
+cmdList.addEventListener('click', (ev) => {
+  const li = ev.target.closest('.cmd-item');
+  if (!li) return;
+  const idx = Number(li.dataset.idx);
+  const it = cmdItems[idx];
+  if (it) { cmdDialog.close(); it.run(); }
+});
+
+document.addEventListener('keydown', (ev) => {
+  const isCmdK = (ev.metaKey || ev.ctrlKey) && (ev.key === 'k' || ev.key === 'K');
+  if (isCmdK) {
+    ev.preventDefault();
+    openCmdPalette();
+  } else if (ev.key === 'Escape' && cmdDialog.open) {
+    cmdDialog.close();
+  } else if ((ev.metaKey || ev.ctrlKey) && ev.key === '/') {
+    // ⌘/ — quick selection-to-btw shortcut (if anything selected in lesson)
+    const sel = window.getSelection()?.toString().trim();
+    if (sel && sel.length > 3 && view.contains(window.getSelection()?.anchorNode)) {
+      ev.preventDefault();
+      openChatPanel(sel);
+    }
+  }
+});
+
+window.addEventListener('hashchange', route);
+route();

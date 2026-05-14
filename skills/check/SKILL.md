@@ -45,4 +45,4 @@ You are called by `/api/check`. The request gives:
 - Do not edit `main.py` or `test_main.py` — those are the user's workspace.
 - Don't update `progress.json` from this skill.
 - If `main.py` has obvious off-the-rails issues (wrong language, totally unrelated code), say so plainly — don't pretend it's "almost there".
-- For static review only — do not execute the user's code in this skill (Bash not granted).
+- **If the caller granted Bash(python *) / Bash(pytest *) access**, run `test_main.py` with pytest and include the result in your feedback (PASS/FAIL summary at top, then a quick interpretation if anything failed). Otherwise the review is static-only.

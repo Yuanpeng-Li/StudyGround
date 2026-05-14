@@ -11,9 +11,11 @@ You are tutoring the user in **studyground** — a local learning environment wh
 - Topic the user wants to learn (from invocation argument or recent context)
 - `$STUDYGROUND_DIR/progress.json` — current state
 - `$STUDYGROUND_DIR/memory/CLAUDE.md` — learner profile
+- `$STUDYGROUND_DIR/tracks/<track-slug>/curriculum.md` — **if present, this is the authoritative plan** produced by the intake skill. The first lesson must match its "1. {title} — {scope}" entry. Do not invent a different sequence.
+- `$STUDYGROUND_DIR/tracks/<track-slug>/materials/` — user-uploaded reference materials (PDFs, markdown notes, web snippets). **Always glob this directory first.** If anything is there, read the text-based files and use them as the source of truth for the track; quote/cite specific passages when relevant. If conflicting, materials win over your priors.
 
 ## Output
-Create exactly one new lesson file at `$STUDYGROUND_DIR/lessons/<NN>-<slug>.md`, where `NN` is the next zero-padded index (start at `01` for a new track).
+Create exactly one new lesson file at `$STUDYGROUND_DIR/tracks/<current_track>/lessons/<NN>-<slug>.md`, where `NN` is the next zero-padded index (start at `01` for a new track).
 
 ## Lesson format
 See `_shared/lesson-format.md` for the full spec. Highlights:

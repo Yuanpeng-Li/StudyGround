@@ -1,36 +1,125 @@
 import { spawn } from 'node:child_process';
 
-export async function spawnClaudeNext({ studygroundDir, pluginRoot, body }) {
-  const topic = body?.topic || null;
-  const prompt = topic
+function buildNextPrompt({ studygroundDir, topic, track }) {
+  const trackHint = track ? `The current_track is "${track}". ` : '';
+  return topic
     ? `You are working inside ${studygroundDir}.
 
-Use the studyground "learn" skill to start a new learning track on: "${topic}".
+${trackHint}Use the studyground "learn" skill to start a new learning track on: "${topic}".
 
-Write exactly one new lesson file under lessons/ following the lesson-format spec
-in the skill's _shared/ docs. Update progress.json. Then exit.`
+Write exactly one new lesson file under tracks/<current_track>/lessons/ following the
+lesson-format spec in the skill's _shared/ docs. Update progress.json. Then exit.`
     : `You are working inside ${studygroundDir}.
 
-Read progress.json. If no current_track is set, use the studyground "learn" skill
+${trackHint}Read progress.json. If no current_track is set, use the studyground "learn" skill
 with a sensible default topic ("transformers from scratch"). Otherwise use the
 "next" skill to advance the current track by one lesson.
 
-Write exactly one new lesson file under lessons/ following the lesson-format spec
-in the skill's _shared/ docs. Update progress.json. Then exit.`;
+If tracks/<current_track>/curriculum.md exists, treat it as the authoritative plan —
+the next lesson should be whatever's next in that plan, grounded in any
+tracks/<current_track>/materials/ that exist.
 
-  return runClaude({ prompt, pluginRoot, studygroundDir });
+Write exactly one new lesson file under tracks/<current_track>/lessons/ following the
+lesson-format spec in the skill's _shared/ docs. Update progress.json. Then exit.`;
+}
+
+export async function spawnClaudeNext({ studygroundDir, pluginRoot, body }) {
+  return runClaude({
+    prompt: buildNextPrompt({ studygroundDir, topic: body?.topic, track: body?.track }),
+    pluginRoot,
+    studygroundDir,
+  });
+}
+
+export function spawnClaudeNextStream({ studygroundDir, pluginRoot, body, onDelta, onTool, onDone, onError }) {
+  const args = [
+    '-p',
+    buildNextPrompt({ studygroundDir, topic: body?.topic, track: body?.track }),
+    '--plugin-dir',
+    pluginRoot,
+    '--add-dir',
+    studygroundDir,
+    '--permission-mode',
+    'acceptEdits',
+    '--allowed-tools',
+    'Read,Edit,Write,Glob,Grep,Skill,Task',
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--max-turns',
+    '30',
+    '--no-session-persistence',
+  ];
+  const child = spawn('claude', args, {
+    cwd: studygroundDir,
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let buf = '';
+  let result = null;
+  let errBuf = '';
+  const blocks = {};
+
+  child.stdout.on('data', (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+
+      if (ev.type === 'stream_event') {
+        const e = ev.event;
+        if (e?.type === 'content_block_start') {
+          blocks[e.index] = { type: e.content_block?.type, name: e.content_block?.name };
+          if (e.content_block?.type === 'tool_use') {
+            onTool?.({ phase: 'start', name: e.content_block.name });
+          }
+        } else if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') {
+          const text = e.delta.text;
+          if (text) onDelta?.(text);
+        } else if (e?.type === 'content_block_stop') {
+          const blk = blocks[e.index];
+          if (blk?.type === 'tool_use') onTool?.({ phase: 'done', name: blk.name });
+          delete blocks[e.index];
+        }
+      } else if (ev.type === 'result') {
+        result = ev;
+      }
+    }
+  });
+
+  child.stderr.on('data', (d) => { errBuf += d; });
+  child.on('error', (e) => onError?.(e));
+  child.on('close', (code) => {
+    if (code === 0 && result) {
+      onDone?.({
+        duration_ms: result.duration_ms,
+        cost_usd: result.total_cost_usd,
+        num_turns: result.num_turns,
+        text: result.result || '',
+      });
+    } else {
+      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+    }
+  });
+  return child;
 }
 
 export async function spawnClaudeAsk({ studygroundDir, pluginRoot, body }) {
-  const { lesson, index, kind, question } = body || {};
-  if (!lesson || !index || !kind || !question) {
-    throw new Error('ask requires { lesson, index, kind, question }');
+  const { track, lesson, index, kind, question } = body || {};
+  if (!track || !lesson || !index || !kind || !question) {
+    throw new Error('ask requires { track, lesson, index, kind, question }');
   }
   const prompt = `You are working inside ${studygroundDir}.
 
 Use the studyground "ask" skill to fill in an answer for an inline question marker.
 
-  lesson: lessons/${lesson}.md
+  lesson: tracks/${track}/lessons/${lesson}.md
   index:  ${index}   (1-based, counting both ?> and ?>> markers from the top)
   kind:   ${kind}    ("main" for ?>, "btw" for ?>>)
   question: ${JSON.stringify(question)}
@@ -40,37 +129,48 @@ Locate the matching marker, replace the appropriate block, save the file, then e
 }
 
 export async function spawnClaudeRecap({ studygroundDir, pluginRoot, body }) {
-  const { lesson } = body || {};
-  if (!lesson) throw new Error('recap requires { lesson }');
+  const { track, lesson } = body || {};
+  if (!track || !lesson) throw new Error('recap requires { track, lesson }');
   const prompt = `You are working inside ${studygroundDir}.
 
-Use the studyground "recap" skill to fold answered Q&A in lessons/${lesson}.md.
+Use the studyground "recap" skill to fold answered Q&A in tracks/${track}/lessons/${lesson}.md.
 Then exit.`;
   return runClaude({ prompt, pluginRoot, studygroundDir });
 }
 
 export async function spawnClaudeCheck({ studygroundDir, pluginRoot, body }) {
-  const { lesson, exercise } = body || {};
-  if (!lesson || !exercise) {
-    throw new Error('check requires { lesson, exercise }');
+  const { track, lesson, exercise, run_tests } = body || {};
+  if (!track || !lesson || !exercise) {
+    throw new Error('check requires { track, lesson, exercise }');
   }
+  const runHint = run_tests
+    ? `\n**Execution mode**: you may run \`python\` and \`pytest\` against the
+exercise files. If \`test_main.py\` exists, run it with pytest and include the
+output (pass/fail summary + key failures) in the feedback. If tests pass,
+also try \`python main.py\` to confirm it doesn't crash on the default entry
+point. Cap each run at ~30 seconds.`
+    : '\n**Static review only.** Do not invoke Bash.';
   const prompt = `You are working inside ${studygroundDir}.
 
 Use the studyground "check" skill to review the user's solution.
 
-  lesson:   lessons/${lesson}.md
-  exercise: exercises/${exercise}/
+  lesson:   tracks/${track}/lessons/${lesson}.md
+  exercise: tracks/${track}/exercises/${exercise}/
+${runHint}
 
-Read main.py, give honest static-review feedback, write it to
-exercises/${exercise}/feedback.md, and add/replace the feedback block in the
+Read main.py, give honest feedback, write it to
+tracks/${track}/exercises/${exercise}/feedback.md, and add/replace the feedback block in the
 lesson. Then exit.`;
-  return runClaude({ prompt, pluginRoot, studygroundDir });
+  const allowedTools = run_tests
+    ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(python *),Bash(python3 *),Bash(pytest *),Bash(ls *),Bash(cat *)'
+    : undefined;
+  return runClaude({ prompt, pluginRoot, studygroundDir, allowedTools });
 }
 
 export async function spawnClaudeSaveThread({ studygroundDir, pluginRoot, body }) {
-  const { lesson, selection, history } = body || {};
-  if (!lesson || !selection || !Array.isArray(history) || history.length === 0) {
-    throw new Error('save-thread requires { lesson, selection, history[] }');
+  const { track, lesson, selection, history } = body || {};
+  if (!track || !lesson || !selection || !Array.isArray(history) || history.length === 0) {
+    throw new Error('save-thread requires { track, lesson, selection, history[] }');
   }
   const transcript = history
     .map((m, i) => `Turn ${i + 1} [${m.role}]:\n${m.content}`)
@@ -79,7 +179,7 @@ export async function spawnClaudeSaveThread({ studygroundDir, pluginRoot, body }
 
 Use the studyground "save-thread" skill to fold a side-chat conversation into the lesson as a folded ?>> block.
 
-  lesson:    lessons/${lesson}.md
+  lesson:    tracks/${track}/lessons/${lesson}.md
   selection: ${JSON.stringify(selection)}
 
 Conversation transcript:
@@ -88,6 +188,204 @@ ${transcript}
 
 Locate the selection in the file, insert a tightly-formatted ?>> block + <details><summary>btw — saved chat</summary> right after that paragraph, save the file, then exit.`;
   return runClaude({ prompt, pluginRoot, studygroundDir });
+}
+
+function buildTutorPrompt({ studygroundDir, track, history, userMessage }) {
+  const turns = (history || [])
+    .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.content}`)
+    .join('\n\n');
+  return `You are working inside ${studygroundDir}.
+
+Use the studyground "tutor" skill. The current track is "${track}". Read its
+curriculum, lessons listing, materials, threads, and progress.json shallowly
+to ground your reply. Do NOT write any files.
+
+${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}User's current message:
+${userMessage || '(no message — the panel was just opened. Give a brief 1-paragraph status check: where are they in the curriculum, what just happened recently, and 1-2 next-step suggestions.)'}`;
+}
+
+export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDelta, onTool, onDone, onError }) {
+  if (!body?.track) {
+    onError?.(new Error('tutor requires { track }'));
+    return null;
+  }
+  const args = [
+    '-p',
+    buildTutorPrompt({
+      studygroundDir,
+      track: body.track,
+      history: body.history,
+      userMessage: body.user_message,
+    }),
+    '--plugin-dir', pluginRoot,
+    '--add-dir', studygroundDir,
+    '--permission-mode', 'acceptEdits',
+    '--allowed-tools', 'Read,Glob,Grep,Skill',
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--max-turns', '6',
+    '--no-session-persistence',
+  ];
+  const child = spawn('claude', args, {
+    cwd: studygroundDir,
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let buf = '';
+  let result = null;
+  let errBuf = '';
+  const blocks = {};
+  child.stdout.on('data', (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+      if (ev.type === 'stream_event') {
+        const e = ev.event;
+        if (e?.type === 'content_block_start') {
+          blocks[e.index] = { type: e.content_block?.type, name: e.content_block?.name };
+          if (e.content_block?.type === 'tool_use') onTool?.({ phase: 'start', name: e.content_block.name });
+        } else if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') {
+          if (e.delta.text) onDelta?.(e.delta.text);
+        } else if (e?.type === 'content_block_stop') {
+          const blk = blocks[e.index];
+          if (blk?.type === 'tool_use') onTool?.({ phase: 'done', name: blk.name });
+          delete blocks[e.index];
+        }
+      } else if (ev.type === 'result') {
+        result = ev;
+      }
+    }
+  });
+  child.stderr.on('data', (d) => { errBuf += d; });
+  child.on('error', (e) => onError?.(e));
+  child.on('close', (code) => {
+    if (code === 0 && result) {
+      onDone?.({
+        duration_ms: result.duration_ms,
+        cost_usd: result.total_cost_usd,
+        num_turns: result.num_turns,
+        full_text: result.result || '',
+      });
+    } else {
+      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+    }
+  });
+  return child;
+}
+
+function buildIntakePrompt({ studygroundDir, track, history, userMessage, finalize }) {
+  const turns = (history || [])
+    .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.content}`)
+    .join('\n\n');
+  const isFirstTurn = (!history || history.length === 0) && !userMessage;
+  const finalizeBlock = finalize
+    ? `\n**This turn: action="finalize".** The learner is ready to plan. Read the
+whole conversation above, then write tracks/${track}/curriculum.md following the
+skill's exact spec (frontmatter + Learner profile + 6–10 numbered Plan items +
+References). After saving, reply with a short paragraph (3-5 sentences):
+the shape of the plan and what to do next ("hit Next → to start lesson 1, or
+edit curriculum.md if anything's off"). No more questions this turn.`
+    : isFirstTurn
+      ? `\n**This turn: action="ask", and the conversation is empty.** Open the
+door yourself. Read tracks/${track}/track.json for the topic; glance at
+tracks/${track}/materials/ if it exists. Greet, say one true thing about the
+topic so the learner knows you're not running a generic intake form, then ask
+what they're actually after. 1-3 sentences total.`
+      : `\n**This turn: action="ask".** Continue the conversation. Listen to what
+they just said and decide what's worth asking next, or — if you have enough —
+summarize what you heard and offer to plan (they'll click **Plan curriculum →**
+or you can suggest it). Don't grind through a fixed checklist. Don't recap
+unless you're proposing to plan.`;
+  return `You are working inside ${studygroundDir}.
+
+Use the studyground "intake" skill. The current track is "${track}"; metadata at
+tracks/${track}/track.json, any uploaded materials at tracks/${track}/materials/.
+
+${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}${userMessage ? `User just said:\n${userMessage}\n\n` : ''}${finalizeBlock}`;
+}
+
+export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDelta, onTool, onDone, onError }) {
+  if (!body?.track) {
+    onError?.(new Error('intake requires { track }'));
+    return null;
+  }
+  const args = [
+    '-p',
+    buildIntakePrompt({
+      studygroundDir,
+      track: body.track,
+      history: body.history,
+      userMessage: body.user_message,
+      finalize: body.action === 'finalize',
+    }),
+    '--plugin-dir', pluginRoot,
+    '--add-dir', studygroundDir,
+    '--permission-mode', 'acceptEdits',
+    '--allowed-tools', body.action === 'finalize' ? 'Read,Edit,Write,Glob,Grep,Skill' : 'Read,Glob,Grep',
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--max-turns', body.action === 'finalize' ? '8' : '3',
+    '--no-session-persistence',
+  ];
+  const child = spawn('claude', args, {
+    cwd: studygroundDir,
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let buf = '';
+  let result = null;
+  let errBuf = '';
+  const blocks = {};
+  child.stdout.on('data', (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+      if (ev.type === 'stream_event') {
+        const e = ev.event;
+        if (e?.type === 'content_block_start') {
+          blocks[e.index] = { type: e.content_block?.type, name: e.content_block?.name };
+          if (e.content_block?.type === 'tool_use') {
+            onTool?.({ phase: 'start', name: e.content_block.name });
+          }
+        } else if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') {
+          if (e.delta.text) onDelta?.(e.delta.text);
+        } else if (e?.type === 'content_block_stop') {
+          const blk = blocks[e.index];
+          if (blk?.type === 'tool_use') onTool?.({ phase: 'done', name: blk.name });
+          delete blocks[e.index];
+        }
+      } else if (ev.type === 'result') {
+        result = ev;
+      }
+    }
+  });
+  child.stderr.on('data', (d) => { errBuf += d; });
+  child.on('error', (e) => onError?.(e));
+  child.on('close', (code) => {
+    if (code === 0 && result) {
+      onDone?.({
+        duration_ms: result.duration_ms,
+        cost_usd: result.total_cost_usd,
+        num_turns: result.num_turns,
+        full_text: result.result || '',
+      });
+    } else {
+      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+    }
+  });
+  return child;
 }
 
 function buildBtwAskPrompt({ lesson, selection, question, history }) {

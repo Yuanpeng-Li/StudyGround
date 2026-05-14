@@ -37,18 +37,17 @@ rendered inline as part of the main narrative. 1–4 paragraphs. Use math
 ## Btw (`?>>`) flow
 
 A `?>>` marker is normally pre-answered at lesson generation time. But if the
-user explicitly asks for an answer or a deeper take on a folded btw, you may
-be called to **replace** the existing `<details>` block's body.
+user explicitly asks for a deeper take, you'll be called to **replace** the
+existing `<details>` block's body.
 
 1. Read the lesson, find the Nth marker (kind=btw)
 2. The next block is `<details>...</details>` — replace its contents
-   (everything between `<summary>...</summary>` and `</details>`) with your
-   new answer
+   (everything between `<summary>...</summary>` and `</details>`) with a deeper
+   answer that builds on the original short one
 3. Keep the `<summary>btw</summary>` line intact
-4. For btw answers, **invoke the `btw-answerer` subagent via the Task tool** so
-   the work happens in an isolated context. Pass the question + the
-   surrounding lesson excerpt as context. Take the agent's response and write
-   it into the file. This keeps the main session lean.
+
+You don't need to delegate this — the entire `claude -p` call is already a
+short-lived isolated process, so there's no main context to protect.
 
 ## Constraints
 

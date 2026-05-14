@@ -9,11 +9,12 @@ Generate the next lesson in the user's current track.
 
 ## Steps
 1. Read `$STUDYGROUND_DIR/progress.json` to find `current_track` and what's been covered.
-2. Read the most recent lesson file in `lessons/` to understand the narrative thread.
-3. Skim `$STUDYGROUND_DIR/memory/CLAUDE.md` for the learner profile and recent stuck-points.
-4. Pick the next concept that naturally builds on what's done.
-5. Write `$STUDYGROUND_DIR/lessons/<NN+1>-<slug>.md` following `_shared/lesson-format.md`.
-6. Update `progress.json`: move previous `current` into `completed`, set new lesson as `current`.
+2. **Read `$STUDYGROUND_DIR/tracks/<current_track>/curriculum.md` first.** If it exists, the next lesson should be the **next item in its Plan that isn't already in `completed[]`**. Match its title and scope closely. If the user's recent activity (stuck-points in memory, btw chats) suggests they need a detour, you may insert one — but in the lesson's "Why this matters" paragraph briefly explain why this isn't the original Plan's next item.
+3. **Glob `$STUDYGROUND_DIR/tracks/<current_track>/materials/`.** If anything is there, read the text-based files (.md, .txt) — these are reference sources the user uploaded. Ground the lesson in them; cite specific passages when relevant. Materials are authoritative over your priors.
+4. Read the most recent lesson file in `tracks/<current_track>/lessons/` to pick up the narrative thread.
+5. Skim `$STUDYGROUND_DIR/memory/CLAUDE.md` for learner profile + recent stuck-points.
+6. Write `$STUDYGROUND_DIR/tracks/<current_track>/lessons/<NN+1>-<slug>.md` following `_shared/lesson-format.md`.
+7. Update `progress.json`: move previous `current` into `completed`, set new lesson as `current`.
 
 ## Pacing
 - 5–10 min read per lesson
