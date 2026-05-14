@@ -323,16 +323,19 @@ function sgExercise(state, startLine, endLine, silent) {
 md.renderer.rules.sg_question = (tokens, idx) => {
   const t = tokens[idx];
   const kind = t.attrGet('data-kind');
-  const text = t.attrGet('data-text');
+  const text = t.attrGet('data-text') || '';
   const index = t.attrGet('data-index');
-  const escaped = escapeHtml(text);
+  // Render the question through inline markdown so $math$ goes through the
+  // math rule. Keep the raw source on data-source so onAskClick can recover
+  // the clean string (the rendered katex DOM's textContent is unusable).
+  const rendered = md.renderInline(text, {});
   const label = kind === 'btw' ? 'btw' : 'q';
   const dig = kind === 'btw'
     ? `<button class="sg-q-dig" data-action="dig-deeper" data-question="${escapeHtml(text)}" title="dig deeper into this">dig deeper</button>`
     : '';
-  return `<div class="sg-question ${kind}" data-index="${index}" data-kind="${kind}">
+  return `<div class="sg-question ${kind}" data-index="${index}" data-kind="${kind}" data-source="${escapeHtml(text)}">
     <span class="sg-q-label">${label}</span>
-    <span class="sg-q-text">${escaped}</span>
+    <span class="sg-q-text">${rendered}</span>
     ${dig}
   </div>\n`;
 };
@@ -584,13 +587,20 @@ function buildOutline() {
     i++;
     const id = `sg-h-${i}`;
     h.id = id;
-    items.push({ level: h.tagName, text: h.textContent.trim(), id });
+    // Clone the heading, strip duplicated katex-mathml (visible + a11y copies
+    // both end up in textContent → unreadable). What's left is the rendered
+    // KaTeX HTML — drop straight into the outline so math renders.
+    const clone = h.cloneNode(true);
+    clone.querySelectorAll('.katex-mathml').forEach((n) => n.remove());
+    // Also strip the section's own ¶/btw buttons if any leaked in via markdown
+    clone.querySelectorAll('.sg-q-dig, .ask-btn').forEach((n) => n.remove());
+    items.push({ level: h.tagName, html: clone.innerHTML.trim(), id });
   }
   sidebarOutline.innerHTML = items
     .map(
       (it) =>
         `<li class="outline-li">
-          <a href="#${it.id}" data-action="jump-section" data-id="${it.id}" class="outline-${it.level === 'H2' ? 2 : 3}">${escapeHtml(it.text)}</a>
+          <a href="#${it.id}" data-action="jump-section" data-id="${it.id}" class="outline-${it.level === 'H2' ? 2 : 3}">${it.html}</a>
           <button class="outline-btw" data-action="btw-outline" data-id="${it.id}" title="btw — chat about this section">btw</button>
         </li>`,
     )
@@ -598,39 +608,49 @@ function buildOutline() {
   setupSectionObserver(items);
 }
 
-async function loadMaterials() {
-  const list = document.getElementById('sidebar-materials');
-  if (!list) return;
-  if (!currentTrack) {
-    list.innerHTML = '<li class="hint">(pick a course)</li>';
+async function loadMaterials(track, listEl, emptyText) {
+  // Backwards-compat: zero-arg call from old call-sites uses sidebar + currentTrack
+  if (track === undefined && listEl === undefined) {
+    track = currentTrack;
+    listEl = document.getElementById('sidebar-materials');
+    emptyText = 'drop in PDFs/notes →';
+  }
+  if (!listEl) return;
+  if (!track) {
+    listEl.innerHTML = '<li class="hint">(pick a course)</li>';
     return;
   }
   try {
-    const r = await fetch(`/api/tracks/${encodeURIComponent(currentTrack)}/materials`).then((r) => r.json());
+    const r = await fetch(`/api/tracks/${encodeURIComponent(track)}/materials`).then((r) => r.json());
     const mats = r.materials || [];
     if (!mats.length) {
-      list.innerHTML = '<li class="hint">drop in PDFs/notes →</li>';
+      listEl.innerHTML = `<li class="hint">${escapeHtml(emptyText || 'drop in PDFs/notes →')}</li>`;
       return;
     }
-    list.innerHTML = mats
+    listEl.innerHTML = mats
       .map((m) => {
         const sizeKb = m.size < 1024 ? `${m.size}B` : `${(m.size / 1024).toFixed(1)}K`;
         return `<li><div class="material-item">
           <span class="material-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</span>
           <span class="material-size">${sizeKb}</span>
-          <button class="material-del" data-action="delete-material" data-name="${escapeHtml(m.name)}" title="delete" aria-label="delete">×</button>
+          <button class="material-del" data-action="delete-material" data-name="${escapeHtml(m.name)}" data-track="${escapeHtml(track)}" title="delete" aria-label="delete">×</button>
         </div></li>`;
       })
       .join('');
   } catch {}
 }
 
-async function uploadMaterial(file) {
-  if (!currentTrack || !file) return;
+async function uploadMaterial(track, file) {
+  // Backwards-compat: old single-arg call
+  if (file === undefined && (track instanceof File || track instanceof Blob)) {
+    file = track;
+    track = currentTrack;
+  }
+  if (!track || !file) return;
   setStatus(`uploading ${file.name}…`);
   try {
     const buf = await file.arrayBuffer();
-    const url = `/api/tracks/${encodeURIComponent(currentTrack)}/materials?name=${encodeURIComponent(file.name)}`;
+    const url = `/api/tracks/${encodeURIComponent(track)}/materials?name=${encodeURIComponent(file.name)}`;
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
@@ -638,33 +658,42 @@ async function uploadMaterial(file) {
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'upload failed');
     setStatus(`uploaded ${r.name}`);
-    loadMaterials();
+    // Refresh whichever list is visible for this track
+    if (track === currentTrack) loadMaterials();
+    if (track === intakeTrack) {
+      loadMaterials(intakeTrack, document.getElementById('intake-materials-list'), 'drop in PDFs / notes / cheatsheets — your tutor will see them');
+    }
   } catch (e) {
     setStatus('upload error: ' + e.message);
   }
 }
 
-async function deleteMaterial(name) {
-  if (!currentTrack || !name) return;
+async function deleteMaterial(track, name) {
+  if (!track || !name) return;
   if (!confirm(`Delete material "${name}"?`)) return;
   try {
-    const r = await fetch(`/api/tracks/${encodeURIComponent(currentTrack)}/materials/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) => r.json());
+    const r = await fetch(`/api/tracks/${encodeURIComponent(track)}/materials/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'delete failed');
     setStatus(`deleted ${name}`);
-    loadMaterials();
+    if (track === currentTrack) loadMaterials();
+    if (track === intakeTrack) {
+      loadMaterials(intakeTrack, document.getElementById('intake-materials-list'), 'drop in PDFs / notes / cheatsheets — your tutor will see them');
+    }
   } catch (e) {
     setStatus('delete error: ' + e.message);
   }
 }
 
-// Hidden file input for material upload
+// Hidden file input — dataset.track tells the change handler where to upload.
 const materialFileInput = document.createElement('input');
 materialFileInput.type = 'file';
 materialFileInput.multiple = true;
 materialFileInput.style.display = 'none';
 materialFileInput.addEventListener('change', async (ev) => {
-  for (const f of ev.target.files) await uploadMaterial(f);
+  const target = materialFileInput.dataset.track || currentTrack;
+  for (const f of ev.target.files) await uploadMaterial(target, f);
   ev.target.value = '';
+  delete materialFileInput.dataset.track;
 });
 document.body.appendChild(materialFileInput);
 
@@ -673,10 +702,15 @@ document.addEventListener('click', (ev) => {
   if (!btn) return;
   if (btn.dataset.action === 'add-material') {
     ev.preventDefault();
+    materialFileInput.dataset.track = currentTrack || '';
+    materialFileInput.click();
+  } else if (btn.dataset.action === 'add-intake-material') {
+    ev.preventDefault();
+    materialFileInput.dataset.track = intakeTrack || '';
     materialFileInput.click();
   } else if (btn.dataset.action === 'delete-material') {
     ev.preventDefault();
-    deleteMaterial(btn.dataset.name);
+    deleteMaterial(btn.dataset.track || currentTrack, btn.dataset.name);
   }
 });
 
@@ -837,7 +871,14 @@ async function loadLesson(slug) {
     ? `<div class="lesson-meta">${escapeHtml(meta.track || '')} · ${escapeHtml(meta.estimated_minutes || '?')} min</div>`
     : '';
   view.innerHTML = titleBlock + md.render(body, {});
-  lessonTitleBar.textContent = meta.title || slug;
+  // Title bar may contain $math$ from the frontmatter. Render it via md (inline
+  // grammar so no <p> wrapper), then strip the duplicated katex-mathml clone.
+  const titleSrc = meta.title || slug;
+  const renderedTitle = (md.renderInline || md.render).call(md, String(titleSrc), {});
+  const tmp = document.createElement('span');
+  tmp.innerHTML = renderedTitle;
+  tmp.querySelectorAll('.katex-mathml').forEach((n) => n.remove());
+  lessonTitleBar.innerHTML = tmp.innerHTML;
   buildOutline();
   renderSidebarLessons();
   loadThreads();
@@ -949,7 +990,9 @@ async function onAskClick(btn) {
   const qBlock = view.querySelector(`.sg-question[data-index="${index}"]`);
   if (!qBlock) return;
   const kind = qBlock.dataset.kind || 'main';
-  const text = qBlock.querySelector('.sg-q-text')?.textContent || '';
+  // Use the source string preserved on the block; the rendered DOM has
+  // katex-mathml duplicates that would break the prompt.
+  const text = qBlock.dataset.source || qBlock.querySelector('.sg-q-text')?.textContent || '';
   const ansBlock = view.querySelector(`.sg-answer.pending[data-index="${index}"]`);
   if (ansBlock) ansBlock.classList.add('thinking');
   btn.disabled = true;
@@ -1054,6 +1097,10 @@ document.addEventListener('click', async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     openTutorPanel();
+  } else if (action === 'toggle-sidebar') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleSidebar();
   } else if (action === 'open-thread') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1248,7 +1295,7 @@ function ensureSelToolbar() {
   if (selToolbar) return selToolbar;
   selToolbar = document.createElement('div');
   selToolbar.className = 'sg-sel-toolbar';
-  selToolbar.innerHTML = `<button data-action="btw-ask-selection">btw ask</button>`;
+  selToolbar.innerHTML = `<button data-action="btw-ask-selection" title="ask Claude about the highlighted passage"><span class="sg-sel-icon">✦</span><span class="sg-sel-text">ask</span></button>`;
   selToolbar.addEventListener('mousedown', (ev) => ev.preventDefault()); // don't clear selection
   selToolbar.addEventListener('click', (ev) => {
     if (ev.target.dataset?.action === 'btw-ask-selection') {
@@ -1327,8 +1374,9 @@ document.addEventListener('selectionchange', () => {
   const rect = range.getBoundingClientRect();
   if (!rect.width && !rect.height) return hideSelToolbar();
   const tb = ensureSelToolbar();
-  tb.style.top = window.scrollY + rect.top - 38 + 'px';
-  tb.style.left = Math.max(8, window.scrollX + rect.left + rect.width / 2 - 50) + 'px';
+  // Position above the selection, center on it; pill self-centers via translateX(-50%).
+  tb.style.top = window.scrollY + rect.top - 44 + 'px';
+  tb.style.left = window.scrollX + rect.left + rect.width / 2 + 'px';
   tb.classList.add('show');
 });
 
@@ -1337,6 +1385,7 @@ function ensureChatPanel() {
   chatPanel = document.createElement('aside');
   chatPanel.className = 'sg-chat-panel';
   chatPanel.innerHTML = `
+    <div class="sg-chat-resize" title="drag to resize"></div>
     <div class="sg-chat-head">
       <span class="sg-chat-title">btw</span>
       <div class="sg-chat-head-actions">
@@ -1348,7 +1397,8 @@ function ensureChatPanel() {
     <div class="sg-chat-selection"></div>
     <div class="sg-chat-messages"></div>
     <form class="sg-chat-form">
-      <input type="text" name="q" placeholder="ask about this passage…" autocomplete="off" />
+      <div class="sg-chat-quote-chip" title="this snippet (selected inside the panel) will be sent as context"></div>
+      <input type="text" name="q" placeholder="ask about this passage… (or highlight text here to quote it)" autocomplete="off" />
       <button type="submit">Ask</button>
     </form>
   `;
@@ -1359,7 +1409,126 @@ function ensureChatPanel() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && chatPanel.classList.contains('show')) closeChatPanel();
   });
+  wireChatResize(chatPanel);
+  wireChatPanelSelectionPreview(chatPanel);
+  restoreChatWidth(chatPanel);
   return chatPanel;
+}
+
+function wireChatResize(panel) {
+  const handle = panel.querySelector('.sg-chat-resize');
+  let dragging = false;
+  let startX = 0;
+  let startW = 0;
+  handle.addEventListener('mousedown', (ev) => {
+    dragging = true;
+    startX = ev.clientX;
+    startW = panel.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    panel.classList.add('dragging');
+    ev.preventDefault();
+  });
+  window.addEventListener('mousemove', (ev) => {
+    if (!dragging) return;
+    const dx = startX - ev.clientX;
+    const w = Math.max(320, Math.min(window.innerWidth * 0.92, startW + dx));
+    panel.style.setProperty('--sg-chat-width', w + 'px');
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    panel.classList.remove('dragging');
+    const w = panel.style.getPropertyValue('--sg-chat-width');
+    try { if (w) localStorage.setItem('sg-chat-width', w); } catch {}
+  });
+}
+
+function restoreChatWidth(panel) {
+  try {
+    const saved = localStorage.getItem('sg-chat-width');
+    if (saved) panel.style.setProperty('--sg-chat-width', saved);
+  } catch {}
+}
+
+// Selection stash: when the user highlights text inside the panel, remember
+// it. Clicking the input would otherwise clear the live selection, so we
+// can't rely on window.getSelection() at submit time.
+let panelStashedQuote = '';
+
+function clearPanelQuote(panel) {
+  panelStashedQuote = '';
+  const chip = panel?.querySelector('.sg-chat-quote-chip');
+  if (chip) {
+    chip.classList.remove('show');
+    chip.textContent = '';
+  }
+}
+
+function setPanelQuote(panel, text) {
+  panelStashedQuote = text;
+  const chip = panel.querySelector('.sg-chat-quote-chip');
+  if (!chip) return;
+  chip.innerHTML =
+    '<span class="sg-chat-quote-text">“' +
+    escapeHtml(text.slice(0, 240)) +
+    (text.length > 240 ? '…' : '') +
+    '”</span>' +
+    '<button class="sg-chat-quote-x" type="button" title="don\'t quote this">×</button>';
+  chip.classList.add('show');
+}
+
+// When the user highlights text inside the chat panel, stash it + show a
+// quote chip near the input so they can see what's about to be sent.
+function wireChatPanelSelectionPreview(panel) {
+  document.addEventListener('selectionchange', () => {
+    if (!panel.classList.contains('show')) return;
+    const snippet = getPanelSelection(panel);
+    if (snippet && snippet !== panelStashedQuote) setPanelQuote(panel, snippet);
+  });
+  // Click the × on the chip to drop the quote
+  panel.addEventListener('click', (ev) => {
+    if (ev.target.closest?.('.sg-chat-quote-x')) {
+      ev.preventDefault();
+      clearPanelQuote(panel);
+    }
+  });
+}
+
+function getPanelSelection(panel) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return '';
+  const anchor = sel.anchorNode;
+  const focus = sel.focusNode;
+  const within = (n) => {
+    while (n) { if (n === panel) return true; n = n.parentNode; }
+    return false;
+  };
+  if (!within(anchor) || !within(focus)) return '';
+  // Don't capture text typed inside the input itself.
+  const sNode = anchor.nodeType === 1 ? anchor : anchor.parentElement;
+  if (sNode?.closest('input, textarea, .sg-chat-form')) return '';
+  return sel.toString().trim();
+}
+
+function toggleSidebar() {
+  const app = document.querySelector('#view-reader .app');
+  if (!app) return;
+  app.classList.toggle('sidebar-collapsed');
+  try {
+    localStorage.setItem(
+      'sg-sidebar-collapsed',
+      app.classList.contains('sidebar-collapsed') ? '1' : '0'
+    );
+  } catch {}
+}
+
+function restoreSidebarState() {
+  try {
+    if (localStorage.getItem('sg-sidebar-collapsed') === '1') {
+      document.querySelector('#view-reader .app')?.classList.add('sidebar-collapsed');
+    }
+  } catch {}
 }
 
 function openChatPanel(selection, restoreThread = null) {
@@ -1370,6 +1539,7 @@ function openChatPanel(selection, restoreThread = null) {
   panel.querySelector('.sg-chat-title').textContent = 'btw';
   panel.querySelector('.sg-chat-selection').style.display = '';
   panel.querySelector('.sg-chat-save').style.display = '';
+  clearPanelQuote(panel);
   if (restoreThread) {
     chatSelection = restoreThread.selection || selection;
     chatHistory = (restoreThread.history || []).map((m) => ({ role: m.role, content: m.content }));
@@ -1383,7 +1553,7 @@ function openChatPanel(selection, restoreThread = null) {
   const msgs = panel.querySelector('.sg-chat-messages');
   msgs.innerHTML = '';
   for (const m of chatHistory) appendChatMessage(m.role, m.content);
-  panel.querySelector('input[name="q"]').placeholder = 'ask about this passage…';
+  panel.querySelector('input[name="q"]').placeholder = 'ask about this passage… (or highlight text here to quote it)';
   panel.classList.add('show');
   setChatSaveEnabled();
   setTimeout(() => panel.querySelector('input[name="q"]').focus(), 50);
@@ -1398,6 +1568,7 @@ async function openTutorPanel() {
   panel.querySelector('.sg-chat-title').textContent = 'tutor · ' + currentTrack;
   panel.querySelector('.sg-chat-selection').style.display = 'none';
   panel.querySelector('.sg-chat-save').style.display = 'none';
+  clearPanelQuote(panel);
   chatSelection = '';
   threadId = null;
   // Restore persisted tutor history for this track
@@ -1410,7 +1581,7 @@ async function openTutorPanel() {
   const msgs = panel.querySelector('.sg-chat-messages');
   msgs.innerHTML = '';
   for (const m of chatHistory) appendChatMessage(m.role, m.content);
-  panel.querySelector('input[name="q"]').placeholder = 'ask the tutor anything about this course…';
+  panel.querySelector('input[name="q"]').placeholder = 'ask the tutor anything… (or highlight text here to quote it)';
   panel.classList.add('show');
   setTimeout(() => panel.querySelector('input[name="q"]').focus(), 50);
   // On first open (no history), trigger an opening status check
@@ -1429,10 +1600,18 @@ function closeChatPanel() {
 async function onChatSubmit(ev) {
   ev.preventDefault();
   const input = ev.target.querySelector('input[name="q"]');
-  const question = input.value.trim();
-  if (!question) return;
+  const rawQuestion = input.value.trim();
+  if (!rawQuestion) return;
   if (chatMode === 'btw' && !chatSelection) return;
+  // If the user highlighted text inside this panel before submitting, include
+  // it as a quoted preamble so the AI sees what they were referring to.
+  const panelSnippet = panelStashedQuote || getPanelSelection(chatPanel);
+  const question = panelSnippet
+    ? `> quoted from this chat:\n> ${panelSnippet.split('\n').join('\n> ')}\n\n${rawQuestion}`
+    : rawQuestion;
   input.value = '';
+  clearPanelQuote(chatPanel);
+  window.getSelection()?.removeAllRanges();
   if (chatMode === 'tutor') {
     return sendTutorTurn(question);
   }
@@ -1729,6 +1908,7 @@ async function route() {
     viewHome.hidden = true;
     document.getElementById('view-intake').hidden = true;
     viewReader.hidden = false;
+    restoreSidebarState();
     if (currentTrack !== r.slug) {
       currentTrack = r.slug;
       try {
@@ -1798,8 +1978,13 @@ async function enterIntake(slug) {
       <p><a href="#/t/${encodeURIComponent(slug)}/">→ Open reader</a></p>
     </div>`;
   }
-  // Kick off the first question
-  await sendIntakeTurn(null, false);
+  // Surface any uploaded materials for this track
+  loadMaterials(
+    slug,
+    document.getElementById('intake-materials-list'),
+    'drop in PDFs / notes / cheatsheets — your tutor will see them',
+  );
+  // Don't auto-send a first turn — let the learner open the conversation.
   setTimeout(() => document.getElementById('intake-input').focus(), 50);
 }
 

@@ -55,6 +55,10 @@ exact form so the UI can offer one-click buttons later:
 - **Do not change progress.json or curriculum.md.** If the user wants those
   changes, point them at the right action (e.g., "edit `curriculum.md` and
   remove that line" — they can do it themselves, or you can describe the diff).
+- **Do not use `AskUserQuestion`** or any interactive-prompt tool. This is a
+  one-shot streamed reply — write your follow-ups in plain markdown so the
+  user can type back in the chat box. Available tools: Read, Glob, Grep,
+  Bash(ls *), Bash(cat *).
 
 The point is to be a fast, advisory presence that doesn't make commits.
 

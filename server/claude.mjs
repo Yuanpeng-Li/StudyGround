@@ -42,7 +42,8 @@ export function spawnClaudeNextStream({ studygroundDir, pluginRoot, body, onDelt
     '--permission-mode',
     'acceptEdits',
     '--allowed-tools',
-    'Read,Edit,Write,Glob,Grep,Skill,Task',
+    'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *)',
+    '--disallowed-tools', 'AskUserQuestion',
     '--output-format',
     'stream-json',
     '--include-partial-messages',
@@ -96,7 +97,7 @@ export function spawnClaudeNextStream({ studygroundDir, pluginRoot, body, onDelt
   child.stderr.on('data', (d) => { errBuf += d; });
   child.on('error', (e) => onError?.(e));
   child.on('close', (code) => {
-    if (code === 0 && result) {
+    if (code === 0 && result && !result.is_error) {
       onDone?.({
         duration_ms: result.duration_ms,
         cost_usd: result.total_cost_usd,
@@ -104,7 +105,7 @@ export function spawnClaudeNextStream({ studygroundDir, pluginRoot, body, onDelt
         text: result.result || '',
       });
     } else {
-      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+      onError?.(new Error(streamingExitDetail(code, result, errBuf)));
     }
   });
   return child;
@@ -220,11 +221,12 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
     '--plugin-dir', pluginRoot,
     '--add-dir', studygroundDir,
     '--permission-mode', 'acceptEdits',
-    '--allowed-tools', 'Read,Glob,Grep,Skill',
+    '--allowed-tools', 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *)',
+    '--disallowed-tools', 'AskUserQuestion',
     '--output-format', 'stream-json',
     '--include-partial-messages',
     '--verbose',
-    '--max-turns', '6',
+    '--max-turns', '10',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
@@ -265,7 +267,7 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
   child.stderr.on('data', (d) => { errBuf += d; });
   child.on('error', (e) => onError?.(e));
   child.on('close', (code) => {
-    if (code === 0 && result) {
+    if (code === 0 && result && !result.is_error) {
       onDone?.({
         duration_ms: result.duration_ms,
         cost_usd: result.total_cost_usd,
@@ -273,7 +275,7 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
         full_text: result.result || '',
       });
     } else {
-      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+      onError?.(new Error(streamingExitDetail(code, result, errBuf)));
     }
   });
   return child;
@@ -327,11 +329,14 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
     '--plugin-dir', pluginRoot,
     '--add-dir', studygroundDir,
     '--permission-mode', 'acceptEdits',
-    '--allowed-tools', body.action === 'finalize' ? 'Read,Edit,Write,Glob,Grep,Skill' : 'Read,Glob,Grep',
+    '--allowed-tools', body.action === 'finalize'
+      ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *)'
+      : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *)',
+    '--disallowed-tools', 'AskUserQuestion',
     '--output-format', 'stream-json',
     '--include-partial-messages',
     '--verbose',
-    '--max-turns', body.action === 'finalize' ? '8' : '3',
+    '--max-turns', body.action === 'finalize' ? '12' : '8',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
@@ -374,7 +379,7 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
   child.stderr.on('data', (d) => { errBuf += d; });
   child.on('error', (e) => onError?.(e));
   child.on('close', (code) => {
-    if (code === 0 && result) {
+    if (code === 0 && result && !result.is_error) {
       onDone?.({
         duration_ms: result.duration_ms,
         cost_usd: result.total_cost_usd,
@@ -382,10 +387,17 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
         full_text: result.result || '',
       });
     } else {
-      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+      onError?.(new Error(streamingExitDetail(code, result, errBuf)));
     }
   });
   return child;
+}
+
+function streamingExitDetail(code, result, errBuf) {
+  if (result) {
+    return `claude exited ${code} (subtype=${result.subtype} stop=${result.stop_reason} terminal=${result.terminal_reason} turns=${result.num_turns}): ${String(result.result || '').slice(0, 600) || errBuf.slice(0, 200) || '(no message)'}`;
+  }
+  return `claude exited ${code}: ${errBuf.slice(0, 400) || '(no stderr)'}`;
 }
 
 function buildBtwAskPrompt({ lesson, selection, question, history }) {
@@ -435,13 +447,14 @@ export function spawnClaudeBtwAskStream({ studygroundDir, pluginRoot, body, onDe
     '--permission-mode',
     'acceptEdits',
     '--allowed-tools',
-    'Read,Glob,Grep',
+    'Read,Glob,Grep,Bash(ls *),Bash(cat *)',
+    '--disallowed-tools', 'AskUserQuestion',
     '--output-format',
     'stream-json',
     '--include-partial-messages',
     '--verbose',
     '--max-turns',
-    '4',
+    '6',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
@@ -475,7 +488,7 @@ export function spawnClaudeBtwAskStream({ studygroundDir, pluginRoot, body, onDe
   child.stderr.on('data', (d) => { errBuf += d; });
   child.on('error', (e) => onError?.(e));
   child.on('close', (code) => {
-    if (code === 0 && result) {
+    if (code === 0 && result && !result.is_error) {
       onDone?.({
         duration_ms: result.duration_ms,
         cost_usd: result.total_cost_usd,
@@ -483,7 +496,7 @@ export function spawnClaudeBtwAskStream({ studygroundDir, pluginRoot, body, onDe
         full_text: result.result || '',
       });
     } else {
-      onError?.(new Error(`claude exited ${code}: ${errBuf.slice(0, 400)}`));
+      onError?.(new Error(streamingExitDetail(code, result, errBuf)));
     }
   });
   return child;
@@ -501,7 +514,8 @@ function runClaude({ prompt, pluginRoot, studygroundDir, allowedTools, maxTurns 
       '--permission-mode',
       'acceptEdits',
       '--allowed-tools',
-      allowedTools || 'Read,Edit,Write,Glob,Grep,Skill,Task',
+      allowedTools || 'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *)',
+      '--disallowed-tools', 'AskUserQuestion',
       '--output-format',
       'json',
       '--max-turns',

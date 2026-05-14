@@ -21,7 +21,7 @@
 // Prereq: studyground server running on :4321 with a lesson loaded.
 import { chromium } from 'playwright';
 
-const URL = process.env.SG_URL || 'http://localhost:4321/#/t/transformers-from-scratch/';
+const URL = process.env.SG_URL || 'http://localhost:4321/#/t/transformers-from-scratch-1/';
 
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();

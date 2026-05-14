@@ -8,7 +8,7 @@ const p = await ctx.newPage();
 await p.setViewportSize({ width: 1400, height: 1100 });
 p.on('pageerror', (e) => console.log('PAGEERROR:', e.message));
 
-await p.goto('http://localhost:4321/#/t/transformers-from-scratch/', { waitUntil: 'domcontentloaded' });
+await p.goto('http://localhost:4321/#/t/transformers-from-scratch-1/', { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => document.querySelector('#lesson-view h1'));
 await p.waitForTimeout(800);
 

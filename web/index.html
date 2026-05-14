@@ -53,6 +53,16 @@
           <h2>Meet your tutor</h2>
           <p class="intake-sub">Talk to them like a real person — what you want to be able to do, what you've already tried, what you've read. They'll draft a curriculum once there's enough to go on; or hit <b>Plan curriculum →</b> yourself whenever you're ready.</p>
         </div>
+        <section class="intake-materials">
+          <div class="intake-materials-head">
+            <span class="intake-materials-label">Materials</span>
+            <span class="intake-materials-hint">— optional: drop in PDFs, notes, or cheatsheets your tutor should ground the course in</span>
+            <button type="button" class="intake-materials-add" data-action="add-intake-material">+ upload</button>
+          </div>
+          <ul class="intake-materials-list" id="intake-materials-list">
+            <li class="hint">drop in PDFs / notes / cheatsheets — your tutor will see them</li>
+          </ul>
+        </section>
         <div id="intake-messages" class="intake-messages"></div>
         <form id="intake-form" class="intake-form">
           <textarea id="intake-input" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
@@ -69,6 +79,7 @@
     <div id="view-reader" class="view" hidden>
       <div class="app">
         <aside id="sidebar">
+          <button class="sidebar-toggle" data-action="toggle-sidebar" title="collapse sidebar" aria-label="collapse sidebar">«</button>
           <a href="#/" class="sidebar-back" data-action="go-home">← all courses</a>
           <div class="sidebar-brand">studyground</div>
           <div class="sidebar-section">

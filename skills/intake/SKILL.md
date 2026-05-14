@@ -119,6 +119,10 @@ lesson 1, or edit `curriculum.md` if anything's off." Keep it concrete.
 - **Don't update `progress.json`.**
 - **Don't run `Skill` to invoke other skills.** You *are* the conversation;
   the other skills run on their own endpoints.
+- **Don't use `AskUserQuestion`** or any other interactive-prompt tool —
+  this endpoint runs as a single one-shot reply that gets streamed to the
+  user. Just write your question in plain text/markdown; the user will type
+  back. The available tools are: Read, Glob, Grep, Bash(ls *), Bash(cat *).
 - **Don't pretend to read PDFs you didn't read.** Use `Glob` to list
   materials. Read text files (`.md`, `.txt`) shallowly if useful. Skip
   binaries.

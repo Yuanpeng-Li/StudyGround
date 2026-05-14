@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFile, stat, readdir, writeFile, mkdir, unlink, rename, rm } from 'node:fs/promises';
+import { readFile, stat, readdir, writeFile, mkdir, unlink, rename, rm, appendFile } from 'node:fs/promises';
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { extname, join, resolve, sep, dirname, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -595,18 +595,17 @@ async function handle(req, res) {
     if (!found) return sendJSON(res, 404, { ok: false, error: 'not found' });
     if (req.method === 'DELETE') {
       try {
-        await unlink(found.path);
+        // Remove both the jsonl and any leftover legacy json
+        if (existsSync(found.path)) await unlink(found.path);
+        if (found.legacy && existsSync(found.legacy)) await unlink(found.legacy);
         return sendJSON(res, 200, { ok: true });
       } catch (e) {
         return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
       }
     }
-    try {
-      const data = JSON.parse(await readFile(found.path, 'utf8'));
-      return sendJSON(res, 200, { ok: true, thread: data });
-    } catch {
-      return sendJSON(res, 404, { ok: false, error: 'not found' });
-    }
+    const data = await readThreadData(found.path, found.legacy);
+    if (!data) return sendJSON(res, 404, { ok: false, error: 'not found' });
+    return sendJSON(res, 200, { ok: true, thread: data });
   }
 
   if (path === '/api/save-thread' && req.method === 'POST') {
@@ -637,46 +636,131 @@ async function handle(req, res) {
   }
 }
 
-async function loadTutorChat(track) {
-  const file = join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.json');
-  try { return JSON.parse(await readFile(file, 'utf8')); }
-  catch { return { track, history: [], updated_at: null }; }
+// ---------- chat persistence (JSONL) ----------
+// First line is a meta record {type:'meta', ...}; each subsequent line is a
+// chat message {role, content, ts}. Appends are O(1) `appendFile` calls.
+// Legacy single-file JSON is auto-migrated on first read.
+
+async function readChatJsonl(jsonlPath, legacyJsonPath) {
+  // Prefer .jsonl. If only the legacy .json exists, migrate it in place.
+  if (!existsSync(jsonlPath) && legacyJsonPath && existsSync(legacyJsonPath)) {
+    await migrateChatJsonToJsonl(legacyJsonPath, jsonlPath);
+  }
+  if (!existsSync(jsonlPath)) return { meta: null, history: [] };
+  const raw = await readFile(jsonlPath, 'utf8');
+  const lines = raw.split('\n');
+  let meta = null;
+  const history = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    let obj;
+    try { obj = JSON.parse(t); } catch { continue; }
+    if (obj.type === 'meta') meta = obj;
+    else if (obj.role) history.push(obj);
+  }
+  return { meta, history };
 }
+
+async function migrateChatJsonToJsonl(jsonPath, jsonlPath) {
+  try {
+    const old = JSON.parse(await readFile(jsonPath, 'utf8'));
+    const lines = [];
+    const meta = { type: 'meta' };
+    // Carry over whatever metadata the old shape had
+    for (const k of ['track', 'lesson', 'selection', 'created_at', 'id', 'kind']) {
+      if (old[k] !== undefined) meta[k] = old[k];
+    }
+    if (!meta.created_at) meta.created_at = old.updated_at || new Date().toISOString();
+    lines.push(JSON.stringify(meta));
+    for (const m of (old.history || [])) {
+      lines.push(JSON.stringify({ role: m.role, content: m.content, ts: m.ts || meta.created_at }));
+    }
+    await mkdir(dirname(jsonlPath), { recursive: true });
+    await writeFile(jsonlPath, lines.join('\n') + '\n');
+    await unlink(jsonPath).catch(() => {});
+  } catch (e) {
+    console.warn('[chat-migrate] failed for', jsonPath, e?.message);
+  }
+}
+
+// Write `lines` (records) to jsonl. If the file doesn't exist yet, prepend
+// the result of makeMeta() as the first line — so meta+messages land in a
+// single atomic appendFile call.
+async function writeChatLines(jsonlPath, makeMeta, messages) {
+  if (!messages.length && !makeMeta) return;
+  const lines = [];
+  if (!existsSync(jsonlPath)) {
+    await mkdir(dirname(jsonlPath), { recursive: true });
+    if (makeMeta) lines.push({ type: 'meta', ...makeMeta() });
+  }
+  for (const m of messages) lines.push(m);
+  if (!lines.length) return;
+  await appendFile(jsonlPath, lines.map((m) => JSON.stringify(m)).join('\n') + '\n');
+}
+
+function tutorChatPath(track) {
+  return join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.jsonl');
+}
+function tutorChatLegacyPath(track) {
+  return join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.json');
+}
+function threadJsonlPath(track, id) {
+  return join(trackThreadsDir(track), `${id}.jsonl`);
+}
+function threadLegacyPath(track, id) {
+  return join(trackThreadsDir(track), `${id}.json`);
+}
+
+async function loadTutorChat(track) {
+  const { meta, history } = await readChatJsonl(tutorChatPath(track), tutorChatLegacyPath(track));
+  return {
+    track,
+    history,
+    updated_at: history.length ? history[history.length - 1].ts : meta?.created_at || null,
+  };
+}
+
 async function appendTutorChat(track, userMessage, answer) {
-  const file = join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.json');
-  const cur = await loadTutorChat(track);
+  const file = tutorChatPath(track);
+  await readChatJsonl(file, tutorChatLegacyPath(track)); // triggers migration if needed
   const now = new Date().toISOString();
-  if (userMessage) cur.history.push({ role: 'user', content: userMessage, ts: now });
-  cur.history.push({ role: 'assistant', content: answer, ts: now });
-  cur.updated_at = now;
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(cur, null, 2));
-  return cur;
+  const msgs = [];
+  if (userMessage) msgs.push({ role: 'user', content: userMessage, ts: now });
+  msgs.push({ role: 'assistant', content: answer, ts: now });
+  await writeChatLines(file, () => ({ kind: 'tutor', track, created_at: now }), msgs);
+  return loadTutorChat(track);
 }
 
 async function persistThread({ id, track, lesson, selection, question, answer }) {
   if (!track) throw new Error('persistThread requires track');
-  const dir = trackThreadsDir(track);
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, `${id}.json`);
-  let existing = null;
-  try { existing = JSON.parse(await readFile(path, 'utf8')); } catch {}
+  await mkdir(trackThreadsDir(track), { recursive: true });
+  const file = threadJsonlPath(track, id);
+  await readChatJsonl(file, threadLegacyPath(track, id)); // migrate if legacy
   const now = new Date().toISOString();
-  const data = {
-    id,
-    track,
-    lesson,
-    selection: existing?.selection || selection,
-    history: [
-      ...(existing?.history || []),
+  await writeChatLines(
+    file,
+    () => ({ kind: 'btw', id, track, lesson, selection, created_at: now }),
+    [
       { role: 'user', content: question, ts: now },
       { role: 'assistant', content: answer, ts: now },
     ],
-    created_at: existing?.created_at || now,
-    updated_at: now,
+  );
+  return readThreadData(file);
+}
+
+async function readThreadData(jsonlPath, legacyPath) {
+  const { meta, history } = await readChatJsonl(jsonlPath, legacyPath);
+  if (!meta && !history.length) return null;
+  return {
+    id: meta?.id,
+    track: meta?.track,
+    lesson: meta?.lesson,
+    selection: meta?.selection || '',
+    history,
+    created_at: meta?.created_at,
+    updated_at: history.length ? history[history.length - 1].ts : meta?.created_at,
   };
-  await writeFile(path, JSON.stringify(data, null, 2));
-  return data;
 }
 
 // ---------- progress.json write mutex ----------
@@ -838,29 +922,18 @@ async function listLessonsInTrack(track, { withSummary = false } = {}) {
   return out;
 }
 
-async function listAllThreads(track) {
-  const dir = track ? trackThreadsDir(track) : null;
-  if (!dir) return [];
-  const files = await readdir(dir).catch(() => []);
-  const out = [];
-  for (const f of files) {
-    if (!f.endsWith('.json')) continue;
-    try {
-      const data = JSON.parse(await readFile(join(dir, f), 'utf8'));
-      out.push(data);
-    } catch {}
-  }
-  return out;
-}
-
-// Find a thread file across all tracks (used when client doesn't know track)
+// Find a thread file across all tracks (used when client doesn't know track).
+// Returns { path, track, legacy } — `path` is always the .jsonl path that
+// reads should use; `legacy` is the .json path (only set if migration needed).
 async function findThreadFile(id) {
   const tracksRoot = join(STUDYGROUND_DIR, 'tracks');
   const subs = await readdir(tracksRoot, { withFileTypes: true }).catch(() => []);
   for (const s of subs) {
     if (!s.isDirectory()) continue;
-    const candidate = join(trackThreadsDir(s.name), `${id}.json`);
-    if (existsSync(candidate)) return { path: candidate, track: s.name };
+    const jsonl = join(trackThreadsDir(s.name), `${id}.jsonl`);
+    if (existsSync(jsonl)) return { path: jsonl, track: s.name };
+    const legacy = join(trackThreadsDir(s.name), `${id}.json`);
+    if (existsSync(legacy)) return { path: jsonl, legacy, track: s.name };
   }
   return null;
 }
@@ -991,22 +1064,33 @@ async function listThreads({ track, lesson } = {}) {
   for (const t of targetTracks) {
     const dir = trackThreadsDir(t);
     const files = await readdir(dir).catch(() => []);
+    const seen = new Set();
+    const readOne = async (jsonlPath, legacyPath) => {
+      const data = await readThreadData(jsonlPath, legacyPath);
+      if (!data) return;
+      if (lesson && data.lesson !== lesson) return;
+      out.push({
+        id: data.id,
+        track: data.track || t,
+        lesson: data.lesson,
+        selection: data.selection,
+        first_question: data.history?.find((m) => m.role === 'user')?.content || '',
+        updated_at: data.updated_at,
+        created_at: data.created_at,
+        turns: Math.floor((data.history?.length || 0) / 2),
+      });
+    };
     for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      try {
-        const data = JSON.parse(await readFile(join(dir, f), 'utf8'));
-        if (lesson && data.lesson !== lesson) continue;
-        out.push({
-          id: data.id,
-          track: data.track || t,
-          lesson: data.lesson,
-          selection: data.selection,
-          first_question: data.history?.find((m) => m.role === 'user')?.content || '',
-          updated_at: data.updated_at,
-          created_at: data.created_at,
-          turns: Math.floor((data.history?.length || 0) / 2),
-        });
-      } catch {}
+      if (!f.endsWith('.jsonl')) continue;
+      const id = f.slice(0, -'.jsonl'.length);
+      await readOne(join(dir, f));
+      seen.add(id);
+    }
+    for (const f of files) {
+      if (!f.endsWith('.json') || f.endsWith('.jsonl')) continue;
+      const id = f.slice(0, -'.json'.length);
+      if (seen.has(id)) continue;
+      await readOne(join(dir, `${id}.jsonl`), join(dir, f));
     }
   }
   out.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
