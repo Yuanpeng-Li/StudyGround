@@ -58,6 +58,32 @@ function rejectBadSegment(res, label, value) {
   return null;
 }
 
+// Materials are served back to the browser for inline preview. The viewer
+// needs accurate Content-Type so PDFs render via <iframe> instead of being
+// force-downloaded, and so images render as <img>.
+const MATERIAL_MIME = {
+  pdf:  'application/pdf',
+  png:  'image/png',
+  jpg:  'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif:  'image/gif',
+  webp: 'image/webp',
+  svg:  'image/svg+xml',
+  md:   'text/plain; charset=utf-8',
+  txt:  'text/plain; charset=utf-8',
+  json: 'text/plain; charset=utf-8',
+  js:   'text/plain; charset=utf-8',
+  py:   'text/plain; charset=utf-8',
+  css:  'text/plain; charset=utf-8',
+  html: 'text/plain; charset=utf-8',
+  csv:  'text/plain; charset=utf-8',
+};
+function contentTypeForMaterial(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(name || '');
+  const ext = m ? m[1].toLowerCase() : '';
+  return MATERIAL_MIME[ext] || 'application/octet-stream';
+}
+
 // Cap a chat history before persisting to disk. Tutor + thread JSONL files
 // would otherwise grow without bound (clients can PUT thousands of messages).
 // We keep the most recent entries; oldest get trimmed.
@@ -229,9 +255,9 @@ async function handle(req, res) {
       if (req.method === 'GET') {
         try {
           const data = await readFile(file);
-          const isText = /\.(md|txt|json|js|py|css|html|csv)$/i.test(matName);
           res.writeHead(200, {
-            'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/octet-stream',
+            'Content-Type': contentTypeForMaterial(matName),
+            'X-Content-Type-Options': 'nosniff',
           });
           return res.end(data);
         } catch {

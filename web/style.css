@@ -765,6 +765,17 @@ dialog.cmd-palette-dialog {
 .app.sidebar-collapsed {
   grid-template-columns: 40px minmax(0, 1fr);
 }
+/* Material viewer open: insert a second column between sidebar and content.
+   Width is JS-controlled via --sg-material-width (resize handle). */
+.app.material-open {
+  grid-template-columns: 256px var(--sg-material-width, 420px) minmax(0, 1fr);
+}
+.app.sidebar-collapsed.material-open {
+  grid-template-columns: 40px var(--sg-material-width, 420px) minmax(0, 1fr);
+}
+.app.material-dragging { transition: none; }
+.app.material-dragging,
+.app.material-dragging * { user-select: none; cursor: ew-resize !important; }
 /* Content area sizing matches platform.claude.com/docs: prose 896px,
    72px (4.5rem) gap, TOC 288px. The unit is centered horizontally in
    the space remaining after the sidebar, so wider viewports just grow
@@ -2926,3 +2937,200 @@ body.sg-chat-open .tutor-fab {
 
 /* KaTeX inherits font-color from us */
 .katex { color: var(--text-strong); }
+
+/* ---------- material viewer (inline preview panel) ---------- */
+#material-viewer {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  /* overflow stays visible so the resize handle that hangs off the
+     right edge stays clickable; the body scrolls internally instead. */
+  overflow: visible;
+  min-width: 0;
+}
+#material-viewer[hidden] { display: none; }
+.material-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+  flex-shrink: 0;
+  min-height: 44px;
+}
+.material-viewer-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.material-viewer-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.material-viewer-open,
+.material-viewer-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  border-radius: 5px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 90ms ease, color 90ms ease;
+}
+.material-viewer-open { font-size: 0.85rem; }
+.material-viewer-close { font-size: 1.15rem; }
+.material-viewer-open:hover,
+.material-viewer-close:hover {
+  background: var(--bg-card);
+  color: var(--text-strong);
+}
+.material-viewer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+  position: relative;
+}
+.material-viewer-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  background: #525659;
+}
+.material-viewer-body img.material-preview {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  padding: 0.75rem;
+}
+.material-viewer-body pre.material-text {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.material-viewer-body .material-md {
+  padding: 1rem 1.25rem 2rem;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+.material-viewer-body .material-loading,
+.material-viewer-body .material-error,
+.material-viewer-body .material-unsupported {
+  padding: 1.2rem 1.1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.material-viewer-body .material-error { color: #c0392b; }
+.material-viewer-body .material-unsupported a {
+  display: inline-block;
+  margin-top: 0.3rem;
+  color: var(--accent);
+}
+.material-viewer-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 120ms;
+}
+.material-viewer-resize:hover,
+.material-viewer-resize.dragging,
+.material-viewer-resize:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+/* Hide on narrow viewports — fall back to opening in a new tab. */
+@media (max-width: 1100px) {
+  .app.material-open {
+    grid-template-columns: 256px minmax(0, 1fr);
+  }
+  .app.sidebar-collapsed.material-open {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  #material-viewer { display: none; }
+}
+
+/* Active sidebar row matches the open material. */
+.sidebar-materials .material-item.is-open {
+  background: var(--accent-faint);
+  border-radius: 6px;
+}
+.sidebar-materials .material-item.is-open .material-name {
+  color: var(--text-strong);
+}
+
+/* ---------- inline citation chips ([file.pdf, p.N]) ---------- */
+.sg-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  padding: 0.02rem 0.34rem;
+  margin: 0 0.08rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: var(--accent-faint);
+  color: var(--accent);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  cursor: pointer;
+  text-decoration: none;
+  vertical-align: baseline;
+  transition: background 90ms ease, border-color 90ms ease, color 90ms ease;
+  white-space: nowrap;
+}
+.sg-cite:hover,
+.sg-cite:focus-visible {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  border-color: var(--accent);
+  color: var(--text-strong);
+  outline: none;
+}
+.sg-cite.is-active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.sg-cite-icon {
+  font-size: 0.75rem;
+  line-height: 1;
+  opacity: 0.85;
+}
+.sg-cite-page {
+  opacity: 0.8;
+}
+.sg-cite.is-bare {
+  padding: 0.02rem 0.28rem;
+}

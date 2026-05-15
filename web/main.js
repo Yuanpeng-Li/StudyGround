@@ -78,6 +78,50 @@ function mathBlock(state, startLine, endLine, silent) {
   return true;
 }
 
+// ---------- citation chips: [file.pdf], [file.pdf, p.7], [file.pdf, p.7–9] ----------
+// Matches before `link` so it can claim the opening `[`. The filename is
+// captured loosely (any non-bracket/non-newline chars ending in a file
+// extension); the page suffix is optional. Accepts ASCII `-`, en-dash `–`,
+// and em-dash `—` between two page numbers.
+const SG_CITE_RE = /^\[([^\[\]\n]+?\.(?:pdf|md|txt|png|jpe?g|gif|webp|svg|html?|csv|json))(?:,\s*p\.\s*([0-9]+(?:\s*[\-–—]\s*[0-9]+)?))?\]/i;
+md.inline.ruler.before('link', 'sg_cite', sgCite);
+function sgCite(state, silent) {
+  if (state.src[state.pos] !== '[') return false;
+  const tail = state.src.slice(state.pos);
+  const m = SG_CITE_RE.exec(tail);
+  if (!m) return false;
+  // Yield to the regular link rule when this looks like `[text](url)` — we
+  // only want to claim *bare* `[file.pdf]` citations.
+  if (state.src[state.pos + m[0].length] === '(') return false;
+  if (!silent) {
+    const token = state.push('sg_cite', '', 0);
+    token.meta = { file: m[1].trim(), page: (m[2] || '').replace(/\s+/g, '') };
+    token.content = m[0];
+  }
+  state.pos += m[0].length;
+  return true;
+}
+md.renderer.rules.sg_cite = (tokens, idx) => {
+  const { file, page } = tokens[idx].meta;
+  const tooltip = page ? `${file} · p.${page}` : file;
+  // With a page, render an icon + "p.N" chip. Whole-file refs render as
+  // just the icon — the filename lives in the tooltip so inline prose
+  // stays readable.
+  const pageLabel = page
+    ? `<span class="sg-cite-page">p.${escapeHtml(page)}</span>`
+    : '';
+  return (
+    `<a class="sg-cite${page ? '' : ' is-bare'}" href="#" role="button"` +
+    ` data-action="open-cite"` +
+    ` data-file="${escapeHtml(file)}"` +
+    (page ? ` data-page="${escapeHtml(page)}"` : '') +
+    ` title="${escapeHtml(tooltip)}">` +
+    `<span class="sg-cite-icon" aria-hidden="true">📄</span>` +
+    pageLabel +
+    `</a>`
+  );
+};
+
 // ---------- studyground markers: ?>, ?>>, :::exercise, answer blocks ----------
 md.block.ruler.before('paragraph', 'sg_question', sgQuestion);
 md.block.ruler.before('html_block', 'sg_answer_pending', sgAnswerPending);
@@ -895,14 +939,15 @@ async function loadMaterials(track, listEl, emptyText) {
           `Status: ${status}`,
           m.indexed_at ? `Indexed: ${new Date(m.indexed_at).toLocaleString()}` : null,
         ].filter(Boolean).join('\n');
-        return `<li><div class="material-item" data-status="${escapeHtml(status)}">
+        return `<li><div class="material-item" data-status="${escapeHtml(status)}" data-action="open-material" data-name="${escapeHtml(m.name)}" data-track="${escapeHtml(track)}" role="button" tabindex="0" title="${escapeHtml(tooltip)}">
           <span class="material-dot" title="${escapeHtml(status)}"></span>
-          <span class="material-name" title="${escapeHtml(tooltip)}">${escapeHtml(m.name)}</span>
+          <span class="material-name">${escapeHtml(m.name)}</span>
           <span class="material-size">${escapeHtml(stats)}</span>
           <button class="material-del" data-action="delete-material" data-name="${escapeHtml(m.name)}" data-track="${escapeHtml(track)}" title="delete" aria-label="delete">×</button>
         </div></li>`;
       })
       .join('');
+    try { materialViewer?.refreshSidebar?.(); } catch {}
   } catch {}
 }
 
@@ -952,7 +997,214 @@ async function deleteMaterial(track, name) {
   }
 }
 
-// Hidden file input — dataset.track tells the change handler where to upload.
+// ---------- material viewer (inline PDF / text preview) ----------
+const materialViewer = (() => {
+  const root = document.getElementById('material-viewer');
+  const nameEl = document.getElementById('material-viewer-name');
+  const bodyEl = document.getElementById('material-viewer-body');
+  const openLink = document.getElementById('material-viewer-open');
+  const resizeEl = document.getElementById('material-viewer-resize');
+  let appEl = null; // resolved lazily — view may not be mounted at script-load.
+  let state = { track: null, name: null, page: null };
+
+  // Persist width across page loads. Clamp to a sane range.
+  const STORE_KEY = 'sg.materialWidth';
+  function setWidth(w) {
+    const clamped = Math.max(280, Math.min(900, Math.round(w)));
+    document.documentElement.style.setProperty('--sg-material-width', clamped + 'px');
+    try { localStorage.setItem(STORE_KEY, String(clamped)); } catch {}
+  }
+  function loadWidth() {
+    let v;
+    try { v = parseInt(localStorage.getItem(STORE_KEY) || '', 10); } catch {}
+    // Always seed the custom property so getComputedStyle() returns a value
+    // even before the user has resized. Without this the JS read returns ''
+    // and resize math breaks.
+    setWidth(Number.isFinite(v) ? v : 420);
+  }
+  loadWidth();
+
+  function getApp() {
+    // The reader view's .app may not exist on initial home/intake routes.
+    if (appEl && document.contains(appEl)) return appEl;
+    appEl = document.querySelector('#view-reader .app');
+    return appEl;
+  }
+
+  function isText(name)  { return /\.(md|txt|json|js|py|css|html|csv)$/i.test(name); }
+  function isPdf(name)   { return /\.pdf$/i.test(name); }
+  function isImage(name) { return /\.(png|jpe?g|gif|webp|svg)$/i.test(name); }
+  function isMd(name)    { return /\.md$/i.test(name); }
+
+  function urlFor(track, name, page) {
+    const base = `/api/tracks/${encodeURIComponent(track)}/materials/${encodeURIComponent(name)}`;
+    return page ? `${base}#page=${encodeURIComponent(String(page).split(/[-–—]/)[0])}` : base;
+  }
+
+  function syncSidebarActive() {
+    const list = document.getElementById('sidebar-materials');
+    if (!list) return;
+    for (const item of list.querySelectorAll('.material-item')) {
+      const match = state.name &&
+        item.dataset.name === state.name &&
+        item.dataset.track === state.track;
+      item.classList.toggle('is-open', !!match);
+    }
+  }
+
+  async function render() {
+    bodyEl.innerHTML = '<div class="material-loading">loading…</div>';
+    const { track, name, page } = state;
+    const url = urlFor(track, name, page);
+    openLink.href = url;
+
+    if (isPdf(name)) {
+      bodyEl.innerHTML = `<iframe src="${escapeHtml(url)}" title="${escapeHtml(name)}"></iframe>`;
+      return;
+    }
+    if (isImage(name)) {
+      bodyEl.innerHTML = `<img class="material-preview" src="${escapeHtml(url)}" alt="${escapeHtml(name)}">`;
+      return;
+    }
+    if (isText(name)) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const text = await r.text();
+        // Guard against a race: another open() may have started while we awaited.
+        if (state.track !== track || state.name !== name) return;
+        if (isMd(name)) {
+          bodyEl.innerHTML = `<div class="material-md">${md.render(text, {})}</div>`;
+        } else {
+          bodyEl.innerHTML = `<pre class="material-text">${escapeHtml(text)}</pre>`;
+        }
+      } catch (e) {
+        bodyEl.innerHTML = `<div class="material-error">failed to load: ${escapeHtml(e.message || String(e))}</div>`;
+      }
+      return;
+    }
+    bodyEl.innerHTML =
+      `<div class="material-unsupported">Preview not available for this file type.` +
+      `<br><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open / download ↗</a></div>`;
+  }
+
+  function open(track, name, opts = {}) {
+    if (!track || !name) return;
+    const app = getApp();
+    if (!app) return;
+    const samePdfDifferentPage =
+      state.track === track &&
+      state.name === name &&
+      isPdf(name) &&
+      (opts.page || null) !== state.page;
+    state = { track, name, page: opts.page || null };
+    nameEl.textContent = name;
+    nameEl.title = name + (state.page ? ` · p.${state.page}` : '');
+    root.hidden = false;
+    root.setAttribute('aria-hidden', 'false');
+    app.classList.add('material-open');
+    syncSidebarActive();
+    // For PDFs, if just the page changed, swap the iframe hash so the
+    // viewer scrolls without a hard reload when possible.
+    if (samePdfDifferentPage) {
+      const iframe = bodyEl.querySelector('iframe');
+      if (iframe) {
+        iframe.src = urlFor(track, name, state.page);
+        openLink.href = iframe.src;
+        return;
+      }
+    }
+    render();
+    flashActiveCite(opts.source || null);
+  }
+
+  function close() {
+    const app = getApp();
+    state = { track: null, name: null, page: null };
+    if (app) app.classList.remove('material-open');
+    root.hidden = true;
+    root.setAttribute('aria-hidden', 'true');
+    bodyEl.innerHTML = '';
+    nameEl.textContent = '';
+    syncSidebarActive();
+    clearActiveCite();
+  }
+
+  function toggle(track, name) {
+    if (state.track === track && state.name === name && !root.hidden) {
+      close();
+    } else {
+      open(track, name);
+    }
+  }
+
+  // Brief glow on the citation that triggered the open, so the user knows
+  // which chip is currently driving the viewer.
+  function flashActiveCite(node) {
+    clearActiveCite();
+    if (node && node.classList) node.classList.add('is-active');
+  }
+  function clearActiveCite() {
+    document.querySelectorAll('.sg-cite.is-active').forEach((n) => n.classList.remove('is-active'));
+  }
+
+  // Drag-resize. The handle sits on the viewer's right edge; dragging
+  // changes --sg-material-width which the grid template reads.
+  let dragStartX = 0;
+  let dragStartW = 0;
+  function onDragMove(ev) {
+    const dx = ev.clientX - dragStartX;
+    setWidth(dragStartW + dx);
+  }
+  function onDragEnd() {
+    document.removeEventListener('pointermove', onDragMove);
+    document.removeEventListener('pointerup', onDragEnd);
+    const app = getApp();
+    if (app) app.classList.remove('material-dragging');
+    resizeEl.classList.remove('dragging');
+  }
+  resizeEl.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    dragStartX = ev.clientX;
+    const cs = getComputedStyle(document.documentElement).getPropertyValue('--sg-material-width');
+    dragStartW = parseInt(cs, 10) || root.getBoundingClientRect().width || 420;
+    const app = getApp();
+    if (app) app.classList.add('material-dragging');
+    resizeEl.classList.add('dragging');
+    document.addEventListener('pointermove', onDragMove);
+    document.addEventListener('pointerup', onDragEnd);
+  });
+  // Keyboard resize (Left/Right when handle is focused).
+  resizeEl.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    const cs = getComputedStyle(document.documentElement).getPropertyValue('--sg-material-width');
+    const w = parseInt(cs, 10) || 420;
+    setWidth(w + (ev.key === 'ArrowRight' ? 16 : -16));
+  });
+
+  // Close with Esc when viewer is the focused/active region.
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (root.hidden) return;
+    // Don't steal Esc from chat panels / modals — only close if the user
+    // clicked into the viewer or there's no other obvious modal target.
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') return;
+    if (root.contains(document.activeElement) || ev.target === document.body) {
+      close();
+    }
+  });
+
+  return {
+    open,
+    close,
+    toggle,
+    refreshSidebar: syncSidebarActive,
+    get state() { return { ...state }; },
+  };
+})();
 const materialFileInput = document.createElement('input');
 materialFileInput.type = 'file';
 materialFileInput.multiple = true;
@@ -966,20 +1218,42 @@ materialFileInput.addEventListener('change', async (ev) => {
 document.body.appendChild(materialFileInput);
 
 document.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('button[data-action]');
-  if (!btn) return;
-  if (btn.dataset.action === 'add-material') {
+  const node = ev.target.closest('[data-action]');
+  if (!node) return;
+  const action = node.dataset.action;
+  if (action === 'add-material') {
     ev.preventDefault();
     materialFileInput.dataset.track = currentTrack || '';
     materialFileInput.click();
-  } else if (btn.dataset.action === 'add-intake-material') {
+  } else if (action === 'add-intake-material') {
     ev.preventDefault();
     materialFileInput.dataset.track = intakeTrack || '';
     materialFileInput.click();
-  } else if (btn.dataset.action === 'delete-material') {
+  } else if (action === 'delete-material') {
     ev.preventDefault();
-    deleteMaterial(btn.dataset.track || currentTrack, btn.dataset.name);
+    ev.stopPropagation();
+    deleteMaterial(node.dataset.track || currentTrack, node.dataset.name);
+  } else if (action === 'open-material') {
+    ev.preventDefault();
+    materialViewer.toggle(node.dataset.track || currentTrack, node.dataset.name);
+  } else if (action === 'close-material') {
+    ev.preventDefault();
+    materialViewer.close();
+  } else if (action === 'open-cite') {
+    ev.preventDefault();
+    const file = node.dataset.file;
+    const page = node.dataset.page || null;
+    materialViewer.open(currentTrack, file, { page, source: node });
   }
+});
+
+// Keyboard support for the material rows (Enter/Space).
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter' && ev.key !== ' ') return;
+  const node = ev.target.closest('[data-action="open-material"]');
+  if (!node) return;
+  ev.preventDefault();
+  materialViewer.toggle(node.dataset.track || currentTrack, node.dataset.name);
 });
 
 async function loadThreads() {
@@ -2860,6 +3134,10 @@ es.addEventListener('message', (ev) => {
   // for the affected track. Cheap: the list re-fetch is small and
   // server-side stats already include the new status.
   if (data.type === 'material_indexed' || data.type === 'material_failed' || data.type === 'material_deleted') {
+    if (data.type === 'material_deleted') {
+      const open = materialViewer.state;
+      if (open.track === data.slug && open.name === data.name) materialViewer.close();
+    }
     if (data.slug === currentTrack) {
       loadMaterials();
     }

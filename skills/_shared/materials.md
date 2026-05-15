@@ -66,13 +66,22 @@ tracks/<track>/
 
 **Always** cite material-grounded claims as `[<filename>, p.<N>]` — single
 square brackets, filename verbatim from INDEX.md, `p.N` for a single page,
-`p.N-M` for a range. Example:
+`p.N-M` for a range (ASCII hyphen `-` or en-dash `–` both work). Example:
 
 > The transformer's quadratic attention cost comes from the full
 > Q·Kᵀ matrix [Vaswani et al. 2017.pdf, p.3].
 
+For a whole-file reference where pages don't apply, drop the page suffix:
+`[<filename>]`.
+
+The web reader renders these as small clickable chips. Clicking a chip
+opens the file in the inline material viewer panel; for PDFs it jumps
+to the cited page (the first number when a range is given).
+
 Don't say "as the paper says" without the bracket. Don't fabricate page
-numbers — if you didn't read the page, don't cite it.
+numbers — if you didn't read the page, don't cite it. The exact bracket
+form matters — `(file.pdf, p.3)` or `file.pdf p.3` won't be turned into
+a clickable chip.
 
 ## What you do NOT do
 
