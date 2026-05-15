@@ -17,7 +17,7 @@ You are the **planner** in a coordinator → planner → developer → tester lo
 
 1. **Read the spec** at `spec_path`.
 2. **Read `CLAUDE.md`** at the repo root. It's the operational guide. Pay specific attention to:
-   - The "Where things live" table — file paths and which 大文件 (`web/main.js`, `web/style.css`, `server/index.mjs`) must be greped not read top-down.
+   - The "Where things live" table — file paths and which large files (`web/main.js`, `web/style.css`, `server/index.mjs`) must be grep'd, not read top-down.
    - The "Edit-layer rules" — what needs a server restart vs. a browser reload vs. nothing.
    - "Lesson format quick rules" — pipe tables only, pre-write answers, `?>>` two-block convention, no H4+, 800–1500 words.
    - "Materials RAG conventions" — never hand-edit `.studyground-index/` or `materials/.text/*.md`; use `sg-search` or the page-anchored mirror.

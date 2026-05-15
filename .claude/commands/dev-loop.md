@@ -9,22 +9,22 @@ You are the **coordinator** for a multi-agent dev loop on the StudyGround repo. 
 ## The architecture you implement
 
 ```
-你 (coordinator, this seat — owns the working tree, switches branches)
+You (coordinator, this seat — own the working tree, switch branches)
    │
-   ├── Agent(planner)                ── 一次性，写 plan.json，返回路径
+   ├── Agent(planner)                ── one-shot; writes plan.json, returns the path
    │
-   ├── Agent(qa-tester)              ── 整个 run 持久化的一个 tester
+   ├── Agent(qa-tester)              ── one tester persistent for the whole run
    │        ↑                        │
-   │        │ SendMessage 推每个 task │
-   │        │ SendMessage 重测        │
+   │        │ SendMessage to push each task    │
+   │        │ SendMessage to re-verify after a fix │
    │
    └── for each task (strictly serial):
         ├── git checkout -b loop/<task_id>             ── coordinator owns git
-        ├── Agent(dev-worker)                          ── 每 task fresh, cwd=repo root
+        ├── Agent(dev-worker)                          ── fresh per task, cwd=repo root
         │     │ commits to loop branch
-        │     ↑ SendMessage("修 bug: <qa report 路径>")
+        │     ↑ SendMessage("fix bug: <qa report path>")
         │
-        ├── SendMessage(tester, "verify <task_id>")    ── 同一个持久 tester
+        ├── SendMessage(tester, "verify <task_id>")    ── same persistent tester
         │     │ commits new test scripts to loop branch
         │
         └── git checkout main && git merge --no-ff loop/<task_id>   ── on PASS

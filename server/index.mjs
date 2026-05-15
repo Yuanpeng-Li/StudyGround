@@ -279,10 +279,11 @@ async function handle(req, res) {
         }
         if (!name) return sendJSON(res, 400, { ok: false, error: 'name required' });
         // Preserve Unicode letters/digits so CJK / accented filenames stay
-        // intact — `\w` is ASCII-only and would mangle 文献2024年.pdf to
-        // _2024_.pdf, which then can't be linked back by [filename, p.N]
-        // citations carrying the original name. Still strip path
-        // separators, control chars, and the Windows-reserved set.
+        // intact — `\w` is ASCII-only and would mangle any non-ASCII letter
+        // to `_` (e.g. an accented or CJK paper name with year and digits
+        // would collapse to "_2024_.pdf"), which then can't be linked back
+        // by [filename, p.N] citations carrying the original name. Still
+        // strip path separators, control chars, and the Windows-reserved set.
         const safeName = sanitizeFilename(name);
         if (!safeName) return sendJSON(res, 400, { ok: false, error: 'invalid name' });
         await ensureTrackDir(trackSlug);

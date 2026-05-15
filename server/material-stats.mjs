@@ -8,7 +8,7 @@
 
 // Per-character "cost in chars per token", indexed by class.
 const CHARS_PER_TOKEN = {
-  cjk: 1.7,    // 一 char ≈ 0.6 tokens
+  cjk: 1.7,    // CJK: ~0.6 tokens per char
   latin: 4.0,  // English: 4 chars per token (industry rule of thumb)
   digit: 3.0,
   punct: 3.0,
