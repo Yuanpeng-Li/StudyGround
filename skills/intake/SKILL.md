@@ -64,10 +64,13 @@ hasn't already addressed; skip the ones that are obvious from context:
    in those or treat them as reference. If empty, ask whether there are
    papers/repos/books the course should track.
 
-A good first turn just opens the door: greet by topic (read
-`tracks/<track>/track.json` for title + description), say one true thing about
-the topic so they know you're not generic, and ask what they're after. 1-3
-sentences.
+A good first turn just opens the door: read `tracks/<track>/track.json`
+for title + description; **also read `memory/CLAUDE.md` if it exists** —
+if the learner already has filled-in Background / Goals / Preferences /
+Style, treat those as given and don't re-ask them. Acknowledge what you
+already know in one phrase ("you've mentioned you prefer code-first…"),
+then ask the *unknown* thing specific to this course. Say one true thing
+about the topic so they know you're not generic. 1-3 sentences.
 
 ## When you think you've heard enough
 
@@ -115,6 +118,26 @@ Scope lines are one short clause, not a paragraph.
 Save the file. Don't touch `progress.json`. Don't generate any lesson body
 yet — `learn`/`next` does that on the next turn.
 
+### Also update `memory/CLAUDE.md` (cross-course profile)
+
+Read `$STUDYGROUND_DIR/memory/CLAUDE.md`. **Merge** facts from this
+conversation that stay true across courses into the matching sections —
+don't overwrite a field the learner already filled in unless the new
+info clearly supersedes it. Write only:
+
+- **Background** — what they already know / have built, in general
+- **Long-term goals** — ambitions that outlive this one course
+- **Preferences** — pace / notation / depth, as durable defaults
+- **Style notes** — how they want lessons written (code-first, math-first, etc.)
+
+Do **NOT** write into memory:
+
+- This course's specific scope, lesson count, deadlines → those are in `curriculum.md`
+- Anything they said is just for *this* track ("for this course I want short sessions")
+- Current stuck-points or confusions → those live in `threads/` and lesson files
+
+Keep edits surgical. If a field is already accurate, leave it alone.
+
 Then reply with a short paragraph (3-5 sentences): what the plan is, the
 shape of the arc, and an explicit "hit **Next →** in the reader to start
 lesson 1, or edit `curriculum.md` if anything's off." Keep it concrete.
@@ -130,7 +153,8 @@ lesson 1, or edit `curriculum.md` if anything's off." Keep it concrete.
   user. Just write your question in plain text/markdown; the user will type
   back. The available tools are: Read, Glob, Grep, Skill, Bash(ls *),
   Bash(cat *), Bash(sg-search *). On `action: finalize` you additionally
-  get Edit, Write so you can produce `curriculum.md`.
+  get Edit, Write so you can produce `curriculum.md` and merge
+  cross-course fields into `memory/CLAUDE.md`.
 - **Don't pretend to read materials you didn't read.** The on-disk RAG
   layer is your friend: `materials/INDEX.md` for the listing,
   `Bash(sg-search "<query>" --track <track>)` for ranked chunks across

@@ -38,7 +38,7 @@ await p.waitForTimeout(2500); // give the page plenty of time to misbehave
 
 const init = await p.evaluate(() => ({
   messageCount: document.querySelectorAll('.intake-msg').length,
-  matsSection: !!document.querySelector('.intake-materials'),
+  matsSection: !!document.querySelector('.intake-mat-pane'),
   matsHint: document.querySelector('.intake-materials-list .hint')?.textContent?.trim(),
   matsAddBtn: !!document.querySelector('[data-action="add-intake-material"]'),
 }));

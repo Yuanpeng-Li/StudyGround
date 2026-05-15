@@ -431,45 +431,9 @@ body.sg-chat-open {
   color: var(--text-muted);
   font-size: 0.95rem;
 }
-.intake-materials {
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-card);
-  padding: 0.55rem 0.9rem 0.6rem;
-}
-.intake-materials-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.55rem;
-  flex-wrap: wrap;
-}
-.intake-materials-label {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.intake-materials-hint {
-  font-size: 0.82rem;
-  color: var(--text-faint);
-  flex: 1;
-}
-.intake-materials-add {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 0.25rem 0.65rem;
-  border-radius: 999px;
-  border: 1px solid var(--accent-soft);
-  color: var(--accent-deep);
-  background: transparent;
-  cursor: pointer;
-  letter-spacing: 0.04em;
-}
-.intake-materials-add:hover {
-  background: var(--accent-faint);
-  border-color: var(--accent);
-}
+/* Materials sidebar list — the .intake-materials block class is gone now
+   that materials live in their own column (see "intake / plan-mode 3-column
+   layout" further down); the per-item styles below are still used. */
 .intake-materials-list {
   list-style: none;
   margin: 0.4rem 0 0;
@@ -3174,4 +3138,675 @@ body.sg-chat-open .tutor-fab {
 }
 .sg-cite.is-bare {
   padding: 0.02rem 0.28rem;
+}
+
+/* ===== intake / plan-mode 3-column layout ===== */
+/* Layout (flex row):
+     [materials] | [viewer] | [chat] | [plan]
+   Each adjacent pair has a draggable handle. Materials & viewer sit on the
+   left so the user's eye can scan from "what reference do I have" → "what
+   am I telling the tutor" → "what plan came out".
+   - Materials: collapsible to a thin reopen tab.
+   - Viewer: hidden until a material is opened (4-column when expanded).
+   - Plan: hidden in pre-plan phase, fixed-width column in has-plan.
+   Column widths are CSS variables so JS resize handlers can update one
+   property per drag without recomputing layout. */
+
+:root {
+  --intake-mat-w: 240px;
+  --intake-mv-w: 420px;
+  --intake-plan-w: 480px;
+}
+
+#view-intake .intake-main {
+  max-width: none;
+  margin: 0;
+  padding: 1rem 1rem 1.4rem;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 0;
+  /* Hard-bound the layout to viewport height so no single column (e.g. a
+     long materials list) can push the page taller and scroll the form
+     out of view. Each pane handles its own internal scroll below. */
+  height: calc(100vh - 4rem);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* --- Materials (leftmost) ------------------------------------------------ */
+.intake-mat-pane {
+  flex: 0 0 var(--intake-mat-w);
+  min-width: 160px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 0.7rem 0.7rem 0.6rem;
+  overflow-y: auto;
+}
+.intake-mat-pane[hidden] { display: none; }
+.intake-mat-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+.intake-mat-label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex: 1;
+}
+.intake-mat-add, .intake-mat-toggle {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+}
+.intake-mat-add { color: var(--accent-deep); border-color: var(--accent-soft); }
+.intake-mat-add:hover { background: var(--accent-faint); border-color: var(--accent); }
+.intake-mat-toggle:hover { color: var(--accent-deep); border-color: var(--accent); }
+
+/* Re-open tab — only visible while the materials pane is collapsed. */
+.intake-mat-reopen {
+  flex: 0 0 18px;
+  align-self: stretch;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.1em;
+}
+.intake-mat-reopen[hidden] { display: none; }
+.intake-mat-reopen:hover { color: var(--accent-deep); background: var(--accent-faint); }
+
+/* --- Material viewer (PDF / md / image) --------------------------------- */
+.intake-mv-pane {
+  flex: 0 0 var(--intake-mv-w);
+  min-width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.intake-mv-pane[hidden] { display: none; }
+.intake-mv-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.intake-mv-icon { line-height: 1; }
+.intake-mv-name {
+  flex: 1;
+  font-size: 0.88rem;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.intake-mv-open, .intake-mv-close {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1;
+}
+.intake-mv-open:hover, .intake-mv-close:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.intake-mv-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+.intake-mv-body iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 60vh;
+  border: 0;
+  display: block;
+}
+.intake-mv-body .material-md,
+.intake-mv-body .material-text,
+.intake-mv-body .material-loading,
+.intake-mv-body .material-error,
+.intake-mv-body .material-unsupported {
+  padding: 1rem 1.1rem;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.intake-mv-body .material-text {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  margin: 0;
+}
+.intake-mv-body .material-preview {
+  display: block;
+  max-width: 100%;
+  margin: 0.5rem auto;
+}
+
+/* --- Chat pane (middle) ------------------------------------------------- */
+/* Three-row internal layout: hero (auto) / messages (flex, scrollable) /
+   form (auto, pinned to the bottom). Scroll lives on #intake-messages, NOT
+   on the pane itself — otherwise the form scrolls along with the chat and
+   ends up floating in the middle of long conversations. */
+.intake-chat-pane {
+  flex: 1 1 320px;
+  min-width: 320px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 0 1rem;
+  overflow: hidden;
+}
+.intake-chat-pane .intake-hero {
+  flex: 0 0 auto;
+}
+.intake-chat-pane #intake-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.4rem;
+}
+.intake-chat-pane .intake-form {
+  flex: 0 0 auto;
+  position: static;
+  bottom: auto;
+  padding-top: 0;
+  background: var(--bg);
+}
+
+/* --- Plan pane (rightmost) ---------------------------------------------- */
+.intake-plan-pane {
+  flex: 0 0 var(--intake-plan-w);
+  min-width: 320px;
+  min-height: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 1rem 1.2rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  overflow-y: auto;
+}
+
+/* In pre-plan, hide the plan pane + its handle. */
+#view-intake[data-phase="pre-plan"] .intake-plan-pane,
+#view-intake[data-phase="pre-plan"] .intake-resize-handle[data-resize="chat"] {
+  display: none;
+}
+/* Pre-plan: cap the chat at a comfortable reading width and centre it in
+   the space remaining after the materials column. A full-width chat looks
+   bare when there's nothing on the right yet. */
+#view-intake[data-phase="pre-plan"] .intake-chat-pane {
+  flex: 0 1 720px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+/* Hide the "Plan curriculum →" footer button once the plan exists — its
+   role is taken over by the right-pane Regenerate. */
+#view-intake[data-phase="has-plan"] #btn-finalize {
+  display: none;
+}
+
+/* --- Resize handles ----------------------------------------------------- */
+.intake-resize-handle {
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+}
+.intake-resize-handle[hidden] { display: none; }
+.intake-resize-handle::before {
+  /* visible 1px line, centered */
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  width: 1px;
+  background: var(--border);
+  transform: translateX(-50%);
+  transition: background 0.12s, width 0.12s;
+}
+.intake-resize-handle:hover::before,
+.intake-resize-handle:focus-visible::before {
+  background: var(--accent);
+  width: 2px;
+}
+.intake-resize-handle.dragging::before {
+  background: var(--accent);
+  width: 2px;
+}
+/* Suppress text selection across the layout while a drag is in flight */
+#view-intake.intake-dragging,
+#view-intake.intake-dragging * {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+
+/* --- Narrow viewport fallback (stack vertically) ------------------------ */
+@media (max-width: 1100px) {
+  #view-intake .intake-main {
+    flex-direction: column;
+    height: auto;
+    overflow: visible;
+  }
+  #view-intake .intake-mat-pane,
+  #view-intake .intake-mv-pane,
+  #view-intake .intake-plan-pane {
+    flex: 0 0 auto;
+    width: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  #view-intake .intake-chat-pane {
+    overflow: visible;
+    padding: 0;
+  }
+  .intake-resize-handle { display: none; }
+  .intake-mat-reopen { display: none; }
+}
+
+.intake-plan-pane {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 1rem 1.2rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-width: 0;
+}
+.intake-plan-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.7rem;
+  flex-wrap: wrap;
+}
+.intake-plan-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.intake-plan-title {
+  font-family: var(--font-serif);
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.intake-plan-subtitle {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+}
+.intake-plan-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 0.45rem;
+}
+.intake-plan-actions button {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.intake-plan-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent-deep);
+}
+.intake-plan-actions button.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.intake-plan-actions button.primary:hover {
+  filter: brightness(1.05);
+}
+.intake-plan-actions button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.intake-plan-banner {
+  border-radius: var(--radius);
+  padding: 0.55rem 0.85rem;
+  font-size: 0.86rem;
+  background: rgba(241, 196, 15, 0.16);
+  border: 1px solid rgba(241, 196, 15, 0.5);
+  color: #8a6d1c;
+}
+@media (prefers-color-scheme: dark) {
+  .intake-plan-banner { color: #f1c40f; background: rgba(241, 196, 15, 0.1); }
+}
+:root[data-theme="dark"] .intake-plan-banner { color: #f1c40f; background: rgba(241, 196, 15, 0.1); }
+
+.intake-plan-body {
+  font-size: 0.97rem;
+  line-height: 1.65;
+  color: var(--text);
+  /* Same selection target as a lesson body — selectable, anchored */
+  user-select: text;
+  cursor: text;
+}
+.intake-plan-body > :first-child { margin-top: 0; }
+.intake-plan-body > :last-child { margin-bottom: 0; }
+.intake-plan-body h1 {
+  font-family: var(--font-serif);
+  font-size: 1.4rem;
+  margin: 0 0 0.6rem;
+}
+.intake-plan-body h2 {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin: 1.2rem 0 0.4rem;
+}
+.intake-plan-body h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin: 0.9rem 0 0.3rem;
+}
+.intake-plan-body ol, .intake-plan-body ul {
+  padding-left: 1.4rem;
+}
+.intake-plan-body code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--bg-soft);
+  padding: 0.06rem 0.32rem;
+  border-radius: 4px;
+}
+
+.intake-plan-comments {
+  border-top: 1px dashed var(--border-strong);
+  padding-top: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.intake-plan-comments-head {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.intake-plan-comments-hint { text-transform: none; letter-spacing: 0; }
+.intake-plan-comments ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.intake-plan-comments li {
+  background: var(--bg-soft);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  font-size: 0.86rem;
+}
+.intake-plan-comments .pc-quote {
+  flex: 1;
+  min-width: 0;
+}
+.intake-plan-comments .pc-quote-text {
+  display: block;
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: 0.78rem;
+  margin-bottom: 0.2rem;
+}
+.intake-plan-comments .pc-comment {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.intake-plan-comments .pc-remove {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+}
+.intake-plan-comments .pc-remove:hover { color: #c0392b; }
+
+/* Comment popover — anchored to the user's selection on the curriculum */
+.intake-comment-popover {
+  position: absolute;
+  z-index: 30;
+  width: 320px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  padding: 0.7rem 0.8rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.intake-comment-popover[hidden] { display: none; }
+.intake-comment-popover-quote {
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--text-faint);
+  border-left: 2px solid var(--accent-soft);
+  padding-left: 0.55rem;
+  max-height: 3.4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.intake-comment-popover textarea {
+  font: inherit;
+  font-size: 0.92rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+  background: var(--bg-soft);
+  color: var(--text);
+  resize: vertical;
+  min-height: 3em;
+  outline: none;
+}
+.intake-comment-popover textarea:focus { border-color: var(--accent); }
+.intake-comment-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+.intake-comment-popover-actions button {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.intake-comment-popover-actions .primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+/* Inline pin — wraps a passage in the rendered curriculum that the learner
+   has commented on. The 💬 badge sits as a superscript right after; clicking
+   it opens the pin-view popover with the comment text + a Delete button. */
+mark.intake-plan-pin {
+  background: var(--accent-faint);
+  border-bottom: 1.5px dotted var(--accent-soft);
+  padding: 0 0.05rem;
+  border-radius: 2px;
+  color: inherit;
+}
+.intake-plan-pin-badge {
+  /* It's a real <button>, but we render it like a small chip-as-superscript */
+  display: inline-block;
+  margin: 0 0 0 2px;
+  vertical-align: super;
+  font: inherit;
+  font-size: 0.62em;
+  line-height: 1;
+  padding: 0.12em 0.32em;
+  border-radius: 999px;
+  background: var(--accent-faint);
+  border: 1px solid var(--accent-soft);
+  color: var(--accent-deep);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.intake-plan-pin-badge:hover,
+.intake-plan-pin-badge:focus-visible {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.intake-pin-view {
+  position: absolute;
+  z-index: 32;
+  width: 280px;
+  max-width: 90vw;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  padding: 0.7rem 0.8rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.intake-pin-view[hidden] { display: none; }
+.intake-pin-view-text {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--text);
+  max-height: 14em;
+  overflow-y: auto;
+}
+.intake-pin-view-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+.intake-pin-view-actions button {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.intake-pin-view-actions .danger {
+  color: #c0392b;
+  border-color: rgba(192, 57, 43, 0.4);
+}
+.intake-pin-view-actions .danger:hover {
+  background: rgba(192, 57, 43, 0.1);
+  border-color: #c0392b;
+}
+
+/* Bottom orphans strip header gets a slightly different label when shown
+   (handled in JS); the strip itself reuses .intake-plan-comments styles. */
+
+/* Comment-style chat bubble — distinguishes inline comments from chat turns */
+.intake-msg.user.comment {
+  background: var(--bg-soft);
+  border-color: var(--border-strong);
+  border-radius: 12px 12px 4px 12px;
+}
+.intake-msg.user.comment::before {
+  content: "📌 comment";
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 0.25rem;
+}
+.intake-msg.user.comment .pc-quote-text {
+  display: block;
+  font-style: italic;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  border-left: 2px solid var(--accent-soft);
+  padding-left: 0.5rem;
+  margin-bottom: 0.3rem;
+  white-space: pre-wrap;
+}
+
+/* Narrow viewports: stack vertically (defensive — desktop-first product) */
+@media (max-width: 900px) {
+  #view-intake[data-phase="has-plan"] .intake-main {
+    grid-template-columns: 1fr;
+  }
+  #view-intake[data-phase="has-plan"] .intake-chat-pane {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
 }

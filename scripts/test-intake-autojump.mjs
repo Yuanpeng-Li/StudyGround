@@ -1,10 +1,9 @@
-// Verify: after curriculum.md lands on disk for the intake's track, the
-// client auto-jumps from #/t/<slug>/intake to #/t/<slug>/ (reader).
-// Driven by the SSE `curriculum-change` event the server emits via the
-// watcher + the explicit broadcast on the intake finalize done path.
-//
-// Also confirms the "skip for now" button is gone — it was redundant
-// with the StudyGround brand-link / home navigation.
+// Plan-mode behaviour: when curriculum.md lands on disk while the user is
+// on the intake/plan view, the client should NOT bounce to the reader.
+// Instead, the right pane (`#intake-plan-body`) should refresh in place
+// and the view's data-phase should switch to `has-plan`. This is the new
+// post-rework contract — the old "auto-jump to reader" was removed because
+// it killed the iterate → comment → regenerate loop.
 import { chromium } from 'playwright';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,26 +31,42 @@ await p.goto(`${BASE}/#/t/${SLUG}/intake/`);
 await p.waitForSelector('#intake-input', { state: 'visible' });
 await p.waitForTimeout(500);
 
-// 1. "skip for now" should be gone
+// 1. "skip for now" should be gone (legacy check, retained)
 const skipExists = await p.evaluate(() => !!document.querySelector('[data-action="skip-intake"]'));
 console.log(`(1) skip-intake button present: ${skipExists}  (want false)`);
 
-// 2. While we're on the intake view, write curriculum.md → SSE should fire,
-//    client should navigate to #/t/<slug>/
+// 2. Initial phase should be `pre-plan` (no curriculum yet)
+const phaseBefore = await p.evaluate(() => document.getElementById('view-intake').dataset.phase);
+console.log(`(2) phase before write: ${phaseBefore}  (want pre-plan)`);
+
+// 3. Write curriculum.md → SSE fires → right pane refreshes in place,
+//    NO navigation to reader.
 const beforeHash = await p.evaluate(() => location.hash);
-console.log(`(2) before write, hash = ${beforeHash}`);
-writeFileSync(join(DIR, 'curriculum.md'), '---\nslug: test\nfinalized: 2026-05-14\n---\n# Curriculum\n\n## Plan\n1. lesson — scope\n');
-// Wait long enough for: watcher debounce (200ms) + watcher attach + fs event + SSE roundtrip
+console.log(`(3) before write, hash = ${beforeHash}`);
+writeFileSync(join(DIR, 'curriculum.md'),
+  '---\nslug: test\nfinalized: 2026-05-14\n---\n# Curriculum\n\n## Plan\n1. lesson — scope\n');
+// Wait long enough for: watcher debounce (200ms) + watcher attach + fs event + SSE roundtrip + fetch
 await p.waitForTimeout(1800);
 const afterHash = await p.evaluate(() => location.hash);
-console.log(`(3) after write, hash = ${afterHash}`);
+const phaseAfter = await p.evaluate(() => document.getElementById('view-intake').dataset.phase);
+const planBodyHasContent = await p.evaluate(() => {
+  const el = document.getElementById('intake-plan-body');
+  return !!el && /lesson — scope/.test(el.textContent || '');
+});
+console.log(`(4) after write, hash = ${afterHash}`);
+console.log(`(5) after write, phase = ${phaseAfter}  (want has-plan)`);
+console.log(`(6) plan body shows curriculum content: ${planBodyHasContent}  (want true)`);
 
 await p.screenshot({ path: '/tmp/intake-autojump.png', fullPage: false });
 
 let failed = 0;
 if (skipExists) { console.log('FAIL: skip-intake button still present'); failed++; }
 if (beforeHash !== `#/t/${SLUG}/intake/`) { console.log(`FAIL: not on intake view to start (${beforeHash})`); failed++; }
-if (afterHash !== `#/t/${SLUG}/`) { console.log(`FAIL: did not auto-jump to reader (${afterHash})`); failed++; }
+if (phaseBefore !== 'pre-plan') { console.log(`FAIL: phase before should be pre-plan (got ${phaseBefore})`); failed++; }
+// Critical: must NOT have navigated to the reader.
+if (afterHash !== `#/t/${SLUG}/intake/`) { console.log(`FAIL: navigated away from intake (${afterHash}) — plan-mode should refresh in place`); failed++; }
+if (phaseAfter !== 'has-plan') { console.log(`FAIL: phase did not switch to has-plan (got ${phaseAfter})`); failed++; }
+if (!planBodyHasContent) { console.log('FAIL: plan body does not show curriculum content'); failed++; }
 
 console.log(`\n${failed === 0 ? 'all green' : failed + ' failing'}`);
 await b.close();

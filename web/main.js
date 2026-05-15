@@ -3200,7 +3200,7 @@ btnRecap.addEventListener('click', async () => {
 
 // ---------- SSE ----------
 const es = new EventSource('/api/events');
-es.addEventListener('message', (ev) => {
+es.addEventListener('message', async (ev) => {
   let data;
   try {
     data = JSON.parse(ev.data);
@@ -3219,17 +3219,20 @@ es.addEventListener('message', (ev) => {
   if (data.type === 'progress-change') {
     loadList();
   }
-  // Intake just finalized → the server wrote curriculum.md. If we're
-  // still sitting on the intake view for that track, jump to the reader
-  // (where Next → can start lesson 1) immediately. SSE-driven nav is
-  // more reliable than the post-stream setTimeout that finalize used
-  // to depend on — the stream's `done` event can race with the file
-  // write or fail to arrive at all.
+  // Plan-mode: a curriculum-change SSE means the file was just (re)written.
+  // Refresh the right pane in place rather than auto-bouncing to the reader,
+  // so the iterate → comment → regenerate loop stays in one view. (The
+  // event still fires for the broader app — useful for cross-tab updates.)
   if (data.type === 'curriculum-change') {
     const onIntakeView = location.hash.startsWith(`#/t/${encodeURIComponent(data.track)}/intake`);
-    if (onIntakeView) {
-      setStatus('curriculum saved — opening reader');
-      location.hash = `#/t/${encodeURIComponent(data.track)}/`;
+    if (onIntakeView && intakeTrack === data.track) {
+      try {
+        const cur = await fetch(`/api/tracks/${encodeURIComponent(data.track)}/curriculum`).then((r) => r.json());
+        if (cur?.ok) {
+          setIntakePhase('has-plan');
+          renderPlanPane(cur.content || '');
+        }
+      } catch {}
     }
   }
   // Materials pipeline events — refresh whichever materials list is visible
@@ -3403,14 +3406,16 @@ async function route() {
         return;
       }
       const lessons = await loadList();
-      // Auto-redirect to intake if there's nothing here yet
+      // The `#/t/<slug>/` URL means "go to the reader" — that's a deliberate
+      // user action (Start → from the plan view, a typed URL, an old
+      // bookmark). Only auto-bounce to intake when the track is *completely*
+      // empty (no curriculum AND no lessons), to avoid stranding a fresh
+      // track in an empty reader. Home-card clicks on a course with no
+      // lessons take the user straight to the intake URL via trackCardHtml,
+      // so they don't hit this branch.
       if (!lessons.length) {
         const cur = await fetch(`/api/tracks/${encodeURIComponent(r.slug)}/curriculum`).then((x) => x.json()).catch(() => null);
         if (!cur?.ok) {
-          // Important: reset currentTrack so that if the user comes back
-          // (e.g. via "skip intake" → #/t/<slug>/) the reader properly
-          // re-initialises instead of taking the same-slug short-circuit
-          // and showing stale lesson content from another track.
           currentTrack = null;
           location.hash = `#/t/${encodeURIComponent(r.slug)}/intake`;
           return;
@@ -3483,12 +3488,14 @@ async function enterIntake(slug) {
     intakeHistory = past.map((m) => ({ role: m.role, content: m.content }));
     for (const m of past) appendIntakeMsg(m.role, m.content);
   } catch {}
+  // Derive pendingComments BEFORE renderPlanPane: the latter calls
+  // anchorInlinePins which iterates the cache to wrap the matching passages.
+  pendingComments = derivePendingComments(intakeHistory);
   // Phase = has-plan iff curriculum.md exists. CSS hides the right pane in
   // pre-plan via [data-phase].
   const cur = await fetch(`/api/tracks/${encodeURIComponent(slug)}/curriculum`).then((r) => r.json()).catch(() => null);
   setIntakePhase(cur?.ok ? 'has-plan' : 'pre-plan');
   if (cur?.ok) renderPlanPane(cur.content || '');
-  pendingComments = derivePendingComments(intakeHistory);
   renderPendingComments();
   // Surface any uploaded materials for this track
   loadMaterials(
@@ -3533,6 +3540,135 @@ function renderPlanPane(markdown) {
       banner.textContent = '';
     }
   }
+  // Re-anchor pins for any pendingComments whose original passage still exists
+  // in the freshly-rendered curriculum.
+  anchorInlinePins();
+}
+
+// ---- inline pins: wrap commented passages with a 💬 badge --------------
+
+// Pin a Range in the curriculum: ideally wrap it in <mark.intake-plan-pin>
+// (highlights the passage) + trailing 💬 badge. For cross-element selections
+// where surroundContents() would split list/paragraph structure, fall back
+// to badge-only at the end of the selection — the DOM is untouched and the
+// pin still sits visually at the user's anchor point. Returns the mark or
+// the badge (whichever was inserted), or null on total failure.
+function wrapRangeWithPin(range, idx, comment) {
+  const badge = createPinBadge(idx, comment);
+  // Single-parent selection: clean wrap with highlight.
+  const mark = document.createElement('mark');
+  mark.className = 'intake-plan-pin';
+  mark.dataset.idx = String(idx);
+  try {
+    range.surroundContents(mark);
+    mark.after(badge);
+    return mark;
+  } catch {
+    // Cross-element (e.g. selection spans two <li> siblings). DON'T extract
+    // contents — that mangles the list structure into anonymous boxes. Just
+    // collapse to the end of the selection and insert the badge there.
+    const tail = range.cloneRange();
+    tail.collapse(false);
+    try {
+      tail.insertNode(badge);
+      return badge;
+    } catch {
+      return null;
+    }
+  }
+}
+
+// Real <button> so the global click delegate (which matches
+// `button[data-action]`) picks up the badge press, and keyboard
+// activation / focus management come for free.
+function createPinBadge(idx, comment) {
+  const badge = document.createElement('button');
+  badge.type = 'button';
+  badge.className = 'intake-plan-pin-badge';
+  badge.dataset.idx = String(idx);
+  badge.dataset.action = 'open-pin-view';
+  badge.textContent = '💬';
+  badge.title = comment || '';
+  badge.setAttribute('aria-label', 'show comment');
+  return badge;
+}
+
+// Find the first occurrence of `needle` in `container`'s rendered text,
+// tolerating whitespace differences. Returns a Range or null. Used to
+// re-anchor pins after a render (where the saved selection text comes
+// from chat history, possibly with collapsed whitespace).
+function findFirstTextRangeIn(container, needle) {
+  const target = (needle || '').replace(/\s+/g, ' ').trim();
+  if (!target || target.length < 3) return null;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  // Build a normalized string + char→(node, offset) map.
+  let normStr = '';
+  const map = []; // map[i] = { node, offset } for normStr[i]
+  let prevWs = true;
+  let node;
+  while ((node = walker.nextNode())) {
+    // Skip text inside an existing pin badge (so re-anchoring doesn't latch
+    // onto its own residue from a previous render).
+    if (node.parentElement?.closest?.('.intake-plan-pin-badge')) continue;
+    const txt = node.textContent;
+    for (let i = 0; i < txt.length; i++) {
+      const ch = txt[i];
+      const isWs = /\s/.test(ch);
+      if (isWs) {
+        if (prevWs) continue;
+        normStr += ' ';
+        map.push({ node, offset: i });
+        prevWs = true;
+      } else {
+        normStr += ch;
+        map.push({ node, offset: i });
+        prevWs = false;
+      }
+    }
+  }
+  while (normStr.endsWith(' ')) { normStr = normStr.slice(0, -1); map.pop(); }
+  const idx = normStr.indexOf(target);
+  if (idx < 0) return null;
+  const startMap = map[idx];
+  const endMap = map[idx + target.length - 1];
+  if (!startMap || !endMap) return null;
+  const r = document.createRange();
+  try {
+    r.setStart(startMap.node, startMap.offset);
+    r.setEnd(endMap.node, endMap.offset + 1);
+  } catch { return null; }
+  return r;
+}
+
+function clearInlinePins() {
+  const body = intakePlanBodyEl();
+  if (!body) return;
+  for (const m of body.querySelectorAll('mark.intake-plan-pin')) {
+    while (m.firstChild) m.parentNode.insertBefore(m.firstChild, m);
+    m.remove();
+  }
+  for (const b of body.querySelectorAll('.intake-plan-pin-badge')) b.remove();
+}
+
+// Walk pendingComments and try to wrap each one's passage. Sets
+// `c.anchored` so renderPendingComments can skip the ones that landed
+// inline (the bottom strip becomes an "orphan" overflow only).
+function anchorInlinePins() {
+  const body = intakePlanBodyEl();
+  if (!body) return;
+  for (const c of pendingComments) c.anchored = false;
+  for (let i = 0; i < pendingComments.length; i++) {
+    const c = pendingComments[i];
+    const r = findFirstTextRangeIn(body, c.selection);
+    if (!r) continue;
+    const mark = wrapRangeWithPin(r, i, c.comment);
+    if (mark) c.anchored = true;
+  }
+  renderPendingComments();
+}
+function reanchorInlinePins() {
+  clearInlinePins();
+  anchorInlinePins();
 }
 
 // Pending = user comments that came after the most recent assistant turn.
@@ -3570,22 +3706,34 @@ function formatCommentMessage(selection, comment) {
 function renderPendingComments() {
   const wrap = document.getElementById('intake-plan-comments');
   const list = document.getElementById('intake-plan-comments-list');
+  const head = wrap?.querySelector('.intake-plan-comments-head');
   if (!wrap || !list) return;
-  if (!pendingComments.length) {
+  // Anchored pins are surfaced inline at their passage. The bottom strip
+  // is a fallback for orphans (couldn't be re-anchored, e.g. the curriculum
+  // was regenerated and the original passage no longer exists).
+  const orphanIdxs = pendingComments
+    .map((c, i) => (c.anchored ? -1 : i))
+    .filter((i) => i >= 0);
+  if (!orphanIdxs.length) {
     wrap.hidden = true;
     list.innerHTML = '';
     return;
   }
   wrap.hidden = false;
-  list.innerHTML = pendingComments.map((c, i) => `
-    <li>
+  if (head) {
+    head.innerHTML = '<span>📌 Unanchored comments</span>'
+      + ' <span class="hint intake-plan-comments-hint">— passage no longer in the plan, still queued for next regenerate</span>';
+  }
+  list.innerHTML = orphanIdxs.map((i) => {
+    const c = pendingComments[i];
+    return `<li>
       <div class="pc-quote">
         <span class="pc-quote-text">"${escapeHtml(c.selection.slice(0, 180))}${c.selection.length > 180 ? '…' : ''}"</span>
         <span class="pc-comment">${escapeHtml(c.comment)}</span>
       </div>
       <button type="button" class="pc-remove" data-action="remove-pending-comment" data-idx="${i}" title="discard this comment (also drops it from the chat)" aria-label="discard">×</button>
-    </li>
-  `).join('');
+    </li>`;
+  }).join('');
 }
 
 let intakeStreamController = null;
@@ -3651,7 +3799,10 @@ async function sendIntakeTurn(userMessage, finalize) {
         if (ev.type === 'delta') {
           fullText += ev.text;
           placeholder.innerHTML = md.render(fullText, {});
-          window.scrollTo({ top: document.body.scrollHeight });
+          // Auto-scroll the messages container (not window) — the chat-pane
+          // itself doesn't scroll; only #intake-messages does.
+          const msgs = document.getElementById('intake-messages');
+          if (msgs) msgs.scrollTop = msgs.scrollHeight;
         } else if (ev.type === 'done') {
           meta = ev;
         } else if (ev.type === 'error') {
@@ -3668,16 +3819,22 @@ async function sendIntakeTurn(userMessage, finalize) {
     intakeHistory.push({ role: 'assistant', content: fullText });
     setStatus(`intake (${(meta?.duration_ms / 1000).toFixed(1)}s, $${meta?.cost_usd?.toFixed(3)})`);
     if (finalize) {
-      setStatus('curriculum saved');
-      // Primary path: SSE `curriculum-change` jumps us to the reader the
-      // moment the file lands on disk. This setTimeout is the belt — if
-      // SSE missed the event (rare; the watcher self-heals stale entries
-      // but startup races can still happen), nav after a short delay.
-      setTimeout(() => {
-        if (location.hash.startsWith(`#/t/${encodeURIComponent(intakeTrack)}/intake`)) {
-          location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`;
+      // Plan-mode: stay in the intake view, refetch curriculum.md, refresh
+      // the right pane in place. The user clicks `Start learning →` when
+      // they're satisfied with the plan; auto-bouncing to the reader (the
+      // old behaviour) prevented the iterate → comment → regenerate loop.
+      setStatus(`curriculum updated · ${(meta?.duration_ms / 1000).toFixed(1)}s · $${meta?.cost_usd?.toFixed(3)}`);
+      try {
+        const cur = await fetch(`/api/tracks/${encodeURIComponent(intakeTrack)}/curriculum`).then((r) => r.json());
+        if (cur?.ok) {
+          setIntakePhase('has-plan');
+          renderPlanPane(cur.content || '');
         }
-      }, 2000);
+      } catch {}
+      // The just-finished assistant turn pushes any prior pending comments
+      // into the past — recompute the cache.
+      pendingComments = derivePendingComments(intakeHistory);
+      renderPendingComments();
     }
   } catch (e) {
     const aborted = e?.name === 'AbortError';
@@ -3823,16 +3980,538 @@ document.getElementById('intake-messages').addEventListener('click', (ev) => {
   if (msg) editIntakeMsgAndRerun(msg);
 });
 
-// "Plan curriculum →" button
-document.addEventListener('click', (ev) => {
+// "Plan curriculum →" + plan-mode action buttons
+document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button[data-action]');
   if (!btn) return;
-  if (btn.dataset.action === 'finalize-intake') {
+  const action = btn.dataset.action;
+  if (action === 'finalize-intake' || action === 'regenerate-plan') {
     ev.preventDefault();
     const pendingMsg = document.getElementById('intake-input').value.trim();
     document.getElementById('intake-input').value = '';
     sendIntakeTurn(pendingMsg || null, true);
+  } else if (action === 'start-learning') {
+    ev.preventDefault();
+    if (intakeTrack) location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`;
+  } else if (action === 'back-to-plan') {
+    ev.preventDefault();
+    if (currentTrack) location.hash = `#/t/${encodeURIComponent(currentTrack)}/intake`;
+  } else if (action === 'submit-inline-comment') {
+    ev.preventDefault();
+    submitInlineComment();
+  } else if (action === 'cancel-inline-comment') {
+    ev.preventDefault();
+    hideCommentPopover();
+  } else if (action === 'remove-pending-comment') {
+    ev.preventDefault();
+    const idx = Number(btn.dataset.idx);
+    if (Number.isInteger(idx) && pendingComments[idx]) removePendingComment(idx);
+  } else if (action === 'open-pin-view') {
+    ev.preventDefault();
+    const idx = Number(btn.dataset.idx);
+    if (Number.isInteger(idx) && pendingComments[idx]) openPinView(idx, btn);
+  } else if (action === 'close-pin-view') {
+    ev.preventDefault();
+    closePinView();
+  } else if (action === 'delete-pin') {
+    ev.preventDefault();
+    const idx = _pinViewIdx;
+    closePinView();
+    if (Number.isInteger(idx) && pendingComments[idx]) removePendingComment(idx);
   }
+});
+
+// ---- pin-view popover (click on a 💬 badge) ---------------------------
+let _pinViewIdx = -1;
+function openPinView(idx, anchorEl) {
+  const pop = document.getElementById('intake-pin-view');
+  const txt = document.getElementById('intake-pin-view-text');
+  if (!pop || !txt) return;
+  if (pop.parentNode !== document.body) document.body.appendChild(pop);
+  _pinViewIdx = idx;
+  txt.textContent = pendingComments[idx]?.comment || '';
+  pop.hidden = false;
+  // Position below the badge, clamped to viewport.
+  const r = anchorEl.getBoundingClientRect();
+  const padding = 12;
+  const popW = 280;
+  let left = window.scrollX + r.left;
+  const maxLeft = window.scrollX + document.documentElement.clientWidth - popW - padding;
+  if (left > maxLeft) left = maxLeft;
+  if (left < window.scrollX + padding) left = window.scrollX + padding;
+  pop.style.left = left + 'px';
+  pop.style.top = (window.scrollY + r.bottom + 6) + 'px';
+}
+function closePinView() {
+  const pop = document.getElementById('intake-pin-view');
+  if (pop) pop.hidden = true;
+  _pinViewIdx = -1;
+}
+// Esc closes; click outside closes (but not when clicking another pin badge —
+// that triggers a fresh open).
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const pop = document.getElementById('intake-pin-view');
+  if (pop && !pop.hidden) { ev.preventDefault(); closePinView(); }
+});
+document.addEventListener('mousedown', (ev) => {
+  const pop = document.getElementById('intake-pin-view');
+  if (!pop || pop.hidden) return;
+  if (pop.contains(ev.target)) return;
+  if (ev.target.closest?.('.intake-plan-pin-badge')) return; // re-open path
+  closePinView();
+});
+// Keyboard activation of the badge (Enter / Space)
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter' && ev.key !== ' ') return;
+  const badge = ev.target.closest?.('.intake-plan-pin-badge');
+  if (!badge) return;
+  ev.preventDefault();
+  const idx = Number(badge.dataset.idx);
+  if (Number.isInteger(idx) && pendingComments[idx]) openPinView(idx, badge);
+});
+
+// ---------- Plan-pane inline-comment flow ----------
+
+// State for an in-progress comment popover. We capture the selection range +
+// text the moment the popover opens so the click that focuses the textarea
+// doesn't lose the selection.
+let _commentSelText = '';
+let _commentSelRange = null;
+
+function intakePlanBodyEl() {
+  return document.getElementById('intake-plan-body');
+}
+
+function ensurePopoverInBody() {
+  // The popover is authored inside #view-intake; move it under <body> so we
+  // can position it via document coordinates without parent-clipping.
+  const pop = document.getElementById('intake-comment-popover');
+  if (pop && pop.parentNode !== document.body) document.body.appendChild(pop);
+  return pop;
+}
+
+function showCommentPopover(selectionText, anchorRect, sourceRange) {
+  const pop = ensurePopoverInBody();
+  if (!pop) return;
+  _commentSelText = selectionText;
+  // Snapshot the live range so we can wrap it on submit; the popover's
+  // textarea-focus would otherwise collapse the user's selection.
+  _commentSelRange = sourceRange?.cloneRange?.() || null;
+  document.getElementById('intake-comment-popover-quote').textContent =
+    `"${selectionText.length > 200 ? selectionText.slice(0, 200) + '…' : selectionText}"`;
+  const ta = document.getElementById('intake-comment-popover-input');
+  ta.value = '';
+  pop.hidden = false;
+  // Position below the selection's end, clamped to the viewport.
+  const popW = 320;
+  const padding = 12;
+  let left = window.scrollX + anchorRect.left;
+  const maxLeft = window.scrollX + document.documentElement.clientWidth - popW - padding;
+  if (left > maxLeft) left = maxLeft;
+  if (left < window.scrollX + padding) left = window.scrollX + padding;
+  const top = window.scrollY + anchorRect.bottom + 6;
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+  setTimeout(() => ta.focus(), 0);
+}
+
+function hideCommentPopover() {
+  const pop = document.getElementById('intake-comment-popover');
+  if (pop) pop.hidden = true;
+  _commentSelText = '';
+  _commentSelRange = null;
+}
+
+async function submitInlineComment() {
+  const ta = document.getElementById('intake-comment-popover-input');
+  const text = (ta?.value || '').trim();
+  if (!text || !_commentSelText || !intakeTrack) return hideCommentPopover();
+  // Snapshot the captured range BEFORE async work + DOM mutation. We'll wrap
+  // it with a pin once the persist succeeds.
+  const liveRange = _commentSelRange ? _commentSelRange.cloneRange() : null;
+  const payload = formatCommentMessage(_commentSelText, text);
+  // Persist server-side (so a reload before regenerate doesn't lose it).
+  try {
+    const r = await fetch(`/api/tutor/${encodeURIComponent(intakeTrack)}/append`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'user', content: payload }),
+    }).then((r) => r.json());
+    if (!r?.ok) throw new Error(r?.error || 'append failed');
+  } catch (e) {
+    setStatus('comment failed: ' + e.message);
+    return;
+  }
+  // Optimistic local update: push to history + render in chat + refresh cache.
+  intakeHistory.push({ role: 'user', content: payload });
+  appendIntakeMsg('user', payload);
+  pendingComments = derivePendingComments(intakeHistory);
+  // Drop pre-existing pins first, then pin the new comment using the live
+  // range (or fall back to a text-based re-anchor through anchorInlinePins).
+  clearInlinePins();
+  const newIdx = pendingComments.length - 1;
+  if (liveRange) {
+    const mark = wrapRangeWithPin(liveRange, newIdx, text);
+    if (mark) pendingComments[newIdx].anchored = true;
+  }
+  // Re-anchor the others (and the new one if liveRange wrap failed).
+  for (let i = 0; i < pendingComments.length; i++) {
+    const c = pendingComments[i];
+    if (c.anchored) continue;
+    const r = findFirstTextRangeIn(intakePlanBodyEl(), c.selection);
+    if (!r) continue;
+    const m = wrapRangeWithPin(r, i, c.comment);
+    if (m) c.anchored = true;
+  }
+  renderPendingComments();
+  // Clear selection + popover (after the wrap, so we don't lose the range).
+  try { window.getSelection()?.removeAllRanges(); } catch {}
+  hideCommentPopover();
+  setStatus('comment queued — click 🔄 Regenerate to apply');
+}
+
+async function removePendingComment(uiIdx) {
+  const target = pendingComments[uiIdx];
+  if (!target) return;
+  // Drop from local history and PUT the truncated history back to the server.
+  // We identify the entry by its _idx into intakeHistory.
+  const newHistory = intakeHistory.filter((_, i) => i !== target._idx);
+  try {
+    const r = await fetch(`/api/tutor/${encodeURIComponent(intakeTrack)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ history: newHistory }),
+    }).then((r) => r.json());
+    if (!r?.ok) throw new Error(r?.error || 'remove failed');
+  } catch (e) {
+    setStatus('remove failed: ' + e.message);
+    return;
+  }
+  intakeHistory = newHistory;
+  // Re-render the chat from history (simplest correct approach).
+  const msgs = document.getElementById('intake-messages');
+  msgs.innerHTML = '';
+  for (const m of intakeHistory) appendIntakeMsg(m.role, m.content);
+  pendingComments = derivePendingComments(intakeHistory);
+  reanchorInlinePins();
+}
+
+// Selection on the curriculum pane → show the comment popover.
+//
+// Why mouseup-based instead of selectionchange-based: while the user is
+// drag-selecting, selectionchange fires continuously. Showing the popover
+// mid-drag is bad on its own (jumpy UX) and worse because the popover
+// auto-focuses its textarea, which steals window focus and *collapses
+// the in-progress selection* — the user sees their drag "break" the
+// instant they start. Waiting for mouseup means the selection is final
+// and stable before we touch the DOM. We also gate on a small post-up
+// timeout so the browser's selection has settled (some browsers update
+// the Selection model just after mouseup).
+function maybeOpenCommentPopover() {
+  const pane = intakePlanBodyEl();
+  if (!pane) return;
+  const root = document.getElementById('view-intake');
+  if (!root || root.hidden) return;
+  if (root.dataset.phase !== 'has-plan') return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+  let node = sel.anchorNode;
+  if (node && node.nodeType === 3) node = node.parentNode;
+  if (!node || !pane.contains(node)) return;
+  const text = selectionToTextWithLatex(sel);
+  if (!text || text.length < 3) return;
+  const range = sel.getRangeAt(0);
+  const rects = range.getClientRects?.();
+  const lastRect = (rects && rects.length) ? rects[rects.length - 1] : range.getBoundingClientRect();
+  if (!lastRect) return;
+  showCommentPopover(text, lastRect, range);
+}
+// Mouse-driven selection: open on mouseup inside (or starting in) plan body.
+let _planMouseDown = false;
+document.addEventListener('mousedown', (ev) => {
+  if (intakePlanBodyEl()?.contains(ev.target)) _planMouseDown = true;
+});
+document.addEventListener('mouseup', (ev) => {
+  if (!_planMouseDown) return;
+  _planMouseDown = false;
+  // Defer one tick so the Selection has settled.
+  setTimeout(maybeOpenCommentPopover, 0);
+});
+// Keyboard-driven selection (shift+arrow, ctrl+a inside the pane) — open on
+// keyup so a multi-keystroke selection only triggers once it's done.
+document.addEventListener('keyup', (ev) => {
+  if (!ev.shiftKey && ev.key !== 'Shift' && !(ev.ctrlKey || ev.metaKey)) return;
+  if (!intakePlanBodyEl()?.contains(document.activeElement)
+      && !intakePlanBodyEl()?.contains(window.getSelection()?.anchorNode)) return;
+  setTimeout(maybeOpenCommentPopover, 0);
+});
+// If the user clicks elsewhere (collapsing the selection) while the popover
+// is showing, hide it. Don't hide on every selectionchange — that would
+// fight with our own `submitInlineComment` which clears the selection.
+document.addEventListener('selectionchange', () => {
+  const pop = document.getElementById('intake-comment-popover');
+  if (!pop || pop.hidden) return;
+  // Selection inside the popover textarea? leave it alone.
+  if (pop.contains(document.activeElement)) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) hideCommentPopover();
+});
+
+// Esc dismisses the popover. Click outside (anywhere not the popover) too.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const pop = document.getElementById('intake-comment-popover');
+  if (pop && !pop.hidden) { ev.preventDefault(); hideCommentPopover(); }
+});
+document.addEventListener('mousedown', (ev) => {
+  const pop = document.getElementById('intake-comment-popover');
+  if (!pop || pop.hidden) return;
+  if (pop.contains(ev.target)) return;
+  // Don't dismiss if the user is selecting more text inside the plan body.
+  if (intakePlanBodyEl()?.contains(ev.target)) return;
+  hideCommentPopover();
+});
+
+// Enter submits the inline comment, Shift+Enter for newline.
+document.getElementById('intake-comment-popover-input')?.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
+    ev.preventDefault();
+    submitInlineComment();
+  }
+});
+
+// ---------- intake material viewer + 3-column resize ----------
+// Parallel to the reader's `materialViewer` IIFE but specialised for the
+// plan view: separate DOM nodes, separate width var, no narrow-viewport
+// gating (the viewport already collapses to a stacked layout < 1100px).
+
+const intakeMaterialViewer = (() => {
+  const root    = document.getElementById('intake-mv-pane');
+  const handle  = document.querySelector('.intake-resize-handle[data-resize="mv"]');
+  const nameEl  = document.getElementById('intake-mv-name');
+  const bodyEl  = document.getElementById('intake-mv-body');
+  const openLink = document.getElementById('intake-mv-open');
+  let state = { track: null, name: null };
+
+  function isPdf(name)   { return /\.pdf$/i.test(name); }
+  function isImage(name) { return /\.(png|jpe?g|gif|webp|svg)$/i.test(name); }
+  function isText(name)  { return /\.(md|txt|json|js|py|css|html|csv)$/i.test(name); }
+  function isMd(name)    { return /\.md$/i.test(name); }
+  function urlFor(track, name) { return `/api/tracks/${encodeURIComponent(track)}/materials/${encodeURIComponent(name)}`; }
+
+  function syncListActive() {
+    const list = document.getElementById('intake-materials-list');
+    if (!list) return;
+    for (const item of list.querySelectorAll('.material-item')) {
+      const match = state.name && item.dataset.name === state.name && item.dataset.track === state.track;
+      item.classList.toggle('is-open', !!match);
+    }
+  }
+
+  async function render() {
+    bodyEl.innerHTML = '<div class="material-loading">loading…</div>';
+    const { track, name } = state;
+    const url = urlFor(track, name);
+    openLink.href = url;
+    if (isPdf(name)) {
+      bodyEl.innerHTML = `<iframe src="${escapeHtml(url)}" title="${escapeHtml(name)}"></iframe>`;
+      return;
+    }
+    if (isImage(name)) {
+      bodyEl.innerHTML = `<img class="material-preview" src="${escapeHtml(url)}" alt="${escapeHtml(name)}">`;
+      return;
+    }
+    if (isText(name)) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const text = await r.text();
+        if (state.track !== track || state.name !== name) return;
+        if (isMd(name)) bodyEl.innerHTML = `<div class="material-md">${md.render(text, {})}</div>`;
+        else bodyEl.innerHTML = `<pre class="material-text">${escapeHtml(text)}</pre>`;
+      } catch (e) {
+        bodyEl.innerHTML = `<div class="material-error">failed to load: ${escapeHtml(e.message || String(e))}</div>`;
+      }
+      return;
+    }
+    bodyEl.innerHTML =
+      `<div class="material-unsupported">Preview not available for this file type.` +
+      `<br><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open / download ↗</a></div>`;
+  }
+
+  function open(track, name) {
+    if (!track || !name) return;
+    state = { track, name };
+    nameEl.textContent = name;
+    nameEl.title = name;
+    root.hidden = false;
+    root.setAttribute('aria-hidden', 'false');
+    if (handle) handle.hidden = false;
+    syncListActive();
+    render();
+  }
+  function close() {
+    state = { track: null, name: null };
+    root.hidden = true;
+    root.setAttribute('aria-hidden', 'true');
+    if (handle) handle.hidden = true;
+    bodyEl.innerHTML = '';
+    nameEl.textContent = '';
+    syncListActive();
+  }
+  function toggle(track, name) {
+    if (state.track === track && state.name === name && !root.hidden) close();
+    else open(track, name);
+  }
+  function isOpen() { return !root.hidden; }
+  return { open, close, toggle, isOpen, get state() { return state; }, syncListActive };
+})();
+
+// Re-route material clicks while the intake/plan view is showing — the
+// reader's materialViewer is gated on `#view-reader .app` and would no-op.
+function intakeIsActive() {
+  const v = document.getElementById('view-intake');
+  return v && !v.hidden;
+}
+document.addEventListener('click', (ev) => {
+  if (!intakeIsActive()) return;
+  const node = ev.target.closest?.('[data-action]');
+  if (!node) return;
+  const action = node.dataset.action;
+  if (action === 'open-material') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    intakeMaterialViewer.toggle(node.dataset.track || intakeTrack, node.dataset.name);
+  } else if (action === 'close-intake-material') {
+    ev.preventDefault();
+    intakeMaterialViewer.close();
+  } else if (action === 'toggle-intake-mat') {
+    ev.preventDefault();
+    toggleIntakeMaterials();
+  }
+}, true); // capture so we run before the reader's open-material handler
+
+// Sync the active-row highlight whenever the materials list re-renders.
+const _intakeMatList = document.getElementById('intake-materials-list');
+if (_intakeMatList) {
+  new MutationObserver(() => intakeMaterialViewer.syncListActive())
+    .observe(_intakeMatList, { childList: true });
+}
+
+// --- Materials sidebar collapse / reopen --------------------------------
+function toggleIntakeMaterials() {
+  const pane = document.getElementById('intake-mat-pane');
+  const reopen = document.querySelector('.intake-mat-reopen');
+  const handle = document.querySelector('.intake-resize-handle[data-resize="mat"]');
+  if (!pane || !reopen) return;
+  const collapse = !pane.hidden;
+  pane.hidden = collapse;
+  reopen.hidden = !collapse;
+  if (handle) handle.hidden = collapse; // hide the drag handle when collapsed
+  try { localStorage.setItem('sg.intakeMatCollapsed', collapse ? '1' : '0'); } catch {}
+}
+// Restore collapsed state on first load.
+(function restoreIntakeMatState() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem('sg.intakeMatCollapsed') === '1'; } catch {}
+  if (!collapsed) return;
+  const pane = document.getElementById('intake-mat-pane');
+  const reopen = document.querySelector('.intake-mat-reopen');
+  const handle = document.querySelector('.intake-resize-handle[data-resize="mat"]');
+  if (pane) pane.hidden = true;
+  if (reopen) reopen.hidden = false;
+  if (handle) handle.hidden = true;
+})();
+
+// --- Resize handles (3 dividers, one set of drag logic) ----------------
+// Each handle is identified by `data-resize`:
+//   mat  → drags the right edge of the materials pane (--intake-mat-w grows)
+//   mv   → drags the right edge of the viewer pane (--intake-mv-w grows)
+//   chat → drags the chat | plan boundary (--intake-plan-w grows on left-drag)
+// Widths persist in localStorage; restored on init below.
+const INTAKE_RESIZE_VARS = {
+  mat:  { name: '--intake-mat-w',  min: 160, max: 600, dir: +1 },
+  mv:   { name: '--intake-mv-w',   min: 280, max: 900, dir: +1 },
+  chat: { name: '--intake-plan-w', min: 320, max: 1200, dir: -1 },
+};
+function getCssPx(varName, fallback) {
+  const v = parseInt(getComputedStyle(document.documentElement).getPropertyValue(varName), 10);
+  return Number.isFinite(v) ? v : fallback;
+}
+function setCssPx(varName, px, opts = {}) {
+  document.documentElement.style.setProperty(varName, Math.round(px) + 'px');
+  if (!opts.transient) {
+    try { localStorage.setItem('sg.intake' + varName, String(Math.round(px))); } catch {}
+  }
+}
+// Restore persisted widths.
+(function restoreIntakeWidths() {
+  for (const cfg of Object.values(INTAKE_RESIZE_VARS)) {
+    let v;
+    try { v = parseInt(localStorage.getItem('sg.intake' + cfg.name) || '', 10); } catch {}
+    if (Number.isFinite(v)) {
+      setCssPx(cfg.name, Math.max(cfg.min, Math.min(cfg.max, v)), { transient: true });
+    }
+  }
+})();
+
+let _resizeRaf = 0;
+let _resizeCfg = null;
+let _resizeStartW = 0;
+let _resizeStartX = 0;
+let _resizePendX = 0;
+function _applyResize() {
+  _resizeRaf = 0;
+  const dx = (_resizePendX - _resizeStartX) * _resizeCfg.dir;
+  const w = Math.max(_resizeCfg.min, Math.min(_resizeCfg.max, _resizeStartW + dx));
+  setCssPx(_resizeCfg.name, w, { transient: true });
+}
+function _onResizeMove(ev) {
+  _resizePendX = ev.clientX;
+  if (!_resizeRaf) _resizeRaf = requestAnimationFrame(_applyResize);
+}
+function _onResizeEnd() {
+  document.removeEventListener('pointermove', _onResizeMove);
+  document.removeEventListener('pointerup', _onResizeEnd);
+  if (_resizeRaf) { cancelAnimationFrame(_resizeRaf); _resizeRaf = 0; _applyResize(); }
+  // Persist final width.
+  setCssPx(_resizeCfg.name, getCssPx(_resizeCfg.name, _resizeStartW));
+  document.getElementById('view-intake')?.classList.remove('intake-dragging');
+  document.querySelectorAll('.intake-resize-handle.dragging')
+    .forEach((h) => h.classList.remove('dragging'));
+  _resizeCfg = null;
+}
+document.addEventListener('pointerdown', (ev) => {
+  const handle = ev.target.closest?.('.intake-resize-handle');
+  if (!handle || handle.hidden) return;
+  if (ev.button !== 0) return;
+  const cfg = INTAKE_RESIZE_VARS[handle.dataset.resize];
+  if (!cfg) return;
+  ev.preventDefault();
+  _resizeCfg = cfg;
+  _resizeStartX = ev.clientX;
+  _resizePendX = ev.clientX;
+  _resizeStartW = getCssPx(cfg.name, 320);
+  handle.classList.add('dragging');
+  document.getElementById('view-intake')?.classList.add('intake-dragging');
+  try { handle.setPointerCapture(ev.pointerId); } catch {}
+  document.addEventListener('pointermove', _onResizeMove);
+  document.addEventListener('pointerup', _onResizeEnd);
+});
+// Keyboard resize: focused handle + Left/Right.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+  const handle = ev.target.closest?.('.intake-resize-handle');
+  if (!handle || handle.hidden) return;
+  const cfg = INTAKE_RESIZE_VARS[handle.dataset.resize];
+  if (!cfg) return;
+  const step = ev.shiftKey ? 40 : 12;
+  const dx = (ev.key === 'ArrowRight' ? +1 : -1) * cfg.dir * step;
+  const cur = getCssPx(cfg.name, 320);
+  const next = Math.max(cfg.min, Math.min(cfg.max, cur + dx));
+  setCssPx(cfg.name, next);
+  ev.preventDefault();
 });
 
 async function renderHome() {
@@ -3856,7 +4535,13 @@ async function renderHome() {
 function trackCardHtml(t) {
   const meta = `${t.lesson_count || 0} lessons · ${t.material_count || 0} materials`;
   const hasDesc = (t.description || '').trim().length > 0;
-  return `<a class="track-card ${t.is_current_track ? 'current' : ''}" href="#/t/${encodeURIComponent(t.slug)}/" data-action="open-track" data-slug="${escapeHtml(t.slug)}">
+  // Plan-mode routing: courses with no lessons yet open in the plan view
+  // (where the user can keep iterating on the curriculum). Once lesson 01
+  // exists, home clicks open the reader directly.
+  const target = (t.lesson_count || 0) > 0
+    ? `#/t/${encodeURIComponent(t.slug)}/`
+    : `#/t/${encodeURIComponent(t.slug)}/intake`;
+  return `<a class="track-card ${t.is_current_track ? 'current' : ''}" href="${target}" data-action="open-track" data-slug="${escapeHtml(t.slug)}">
     <span class="track-card-actions">
       <button class="track-edit" data-action="edit-track" data-slug="${escapeHtml(t.slug)}" title="edit title / description / cover" aria-label="edit">✎</button>
       <button class="track-export" data-action="export-track" data-slug="${escapeHtml(t.slug)}" title="download course as .tgz" aria-label="export">⬇</button>

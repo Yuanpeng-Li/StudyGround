@@ -5,4 +5,7 @@ dist/
 web/dist/
 .studyground-cache/
 scripts/.shots/
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/commands/
+*.traineddata

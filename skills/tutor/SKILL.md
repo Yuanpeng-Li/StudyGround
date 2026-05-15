@@ -75,6 +75,19 @@ header. The current turn's prompt will tell you which one is active.
 - Don't make changes the learner didn't ask for. Don't refactor adjacent
   code. Don't update `progress.json`. `curriculum.md` is fair game if the
   learner asks for a curriculum revision.
+- **Cross-course memory updates.** `memory/CLAUDE.md` is the only file
+  you may edit *without being explicitly asked* — and only when the
+  learner reveals a **stable, long-term, cross-course** preference in the
+  conversation. Update the matching field in place, surgically.
+  - ✅ "I tend to skip math derivations and look at code first" → **Style notes**
+  - ✅ "I'm coming from a 10-year backend Go background" → **Background**
+  - ✅ "Long term I want to be able to read RL papers without help" → **Long-term goals**
+  - ❌ "I'm confused about softmax stability right now" → track-local, leave it in `threads/`
+  - ❌ "For this course I want 20-minute sessions" → that's a `curriculum.md` revision, not memory
+  - ❌ "Lesson 3 was too dense" → feedback on this track, not a cross-course fact
+
+  When in doubt, ask yourself: *will this still be true when they start a
+  different course next month?* If not, don't write it to memory.
 
 ## What you NEVER do (either mode)
 

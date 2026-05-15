@@ -50,21 +50,39 @@
         <button class="theme-toggle" title="theme">auto</button>
       </header>
       <main class="intake-main">
+        <!-- Leftmost: materials list (collapsible). Click any item to open
+             the inline material viewer; PDFs render in an iframe. -->
+        <aside class="intake-mat-pane" id="intake-mat-pane">
+          <div class="intake-mat-head">
+            <span class="intake-mat-label">Materials</span>
+            <button type="button" class="intake-mat-add" data-action="add-intake-material" title="upload a material">＋</button>
+            <button type="button" class="intake-mat-toggle" data-action="toggle-intake-mat" title="hide materials" aria-label="hide materials">«</button>
+          </div>
+          <ul class="intake-materials-list" id="intake-materials-list">
+            <li class="hint">drop in PDFs / notes / cheatsheets — your tutor will see them</li>
+          </ul>
+        </aside>
+        <!-- Re-open tab shown only when the materials column is collapsed. -->
+        <button type="button" class="intake-mat-reopen" data-action="toggle-intake-mat" title="show materials" aria-label="show materials" hidden>»</button>
+        <div class="intake-resize-handle" data-resize="mat" role="separator" aria-orientation="vertical" tabindex="0" title="drag to resize"></div>
+
+        <!-- Material viewer: hidden until the user clicks a material. -->
+        <aside class="intake-mv-pane" id="intake-mv-pane" hidden aria-hidden="true">
+          <div class="intake-mv-head">
+            <span class="intake-mv-icon" aria-hidden="true">📄</span>
+            <span class="intake-mv-name" id="intake-mv-name"></span>
+            <a class="intake-mv-open" id="intake-mv-open" href="#" target="_blank" rel="noopener" title="open in new tab" aria-label="open in new tab">↗</a>
+            <button type="button" class="intake-mv-close" data-action="close-intake-material" title="close" aria-label="close">×</button>
+          </div>
+          <div class="intake-mv-body" id="intake-mv-body"></div>
+        </aside>
+        <div class="intake-resize-handle" data-resize="mv" role="separator" aria-orientation="vertical" tabindex="0" title="drag to resize" hidden></div>
+
         <div class="intake-chat-pane">
           <div class="intake-hero">
             <h2>Meet your tutor</h2>
             <p class="intake-sub">Talk to them like a real person — what you want to be able to do, what you've already tried, what you've read. They'll draft a curriculum once there's enough to go on; or hit <b>Plan curriculum →</b> yourself whenever you're ready.</p>
           </div>
-          <section class="intake-materials">
-            <div class="intake-materials-head">
-              <span class="intake-materials-label">Materials</span>
-              <span class="intake-materials-hint">— optional: drop in PDFs, notes, or cheatsheets your tutor should ground the course in</span>
-              <button type="button" class="intake-materials-add" data-action="add-intake-material">+ upload</button>
-            </div>
-            <ul class="intake-materials-list" id="intake-materials-list">
-              <li class="hint">drop in PDFs / notes / cheatsheets — your tutor will see them</li>
-            </ul>
-          </section>
           <div id="intake-messages" class="intake-messages"></div>
           <form id="intake-form" class="intake-form">
             <div class="sg-chat-input-wrap">
@@ -81,6 +99,7 @@
             </div>
           </form>
         </div>
+        <div class="intake-resize-handle" data-resize="chat" role="separator" aria-orientation="vertical" tabindex="0" title="drag to resize"></div>
 
         <aside class="intake-plan-pane" id="intake-plan-pane">
           <div class="intake-plan-head">
@@ -113,6 +132,14 @@
         <div class="intake-comment-popover-actions">
           <button type="button" data-action="cancel-inline-comment">Cancel</button>
           <button type="button" class="primary" data-action="submit-inline-comment">Add comment</button>
+        </div>
+      </div>
+      <!-- Pin viewer: shown when the user clicks a 💬 inline-comment badge -->
+      <div id="intake-pin-view" class="intake-pin-view" hidden>
+        <div class="intake-pin-view-text" id="intake-pin-view-text"></div>
+        <div class="intake-pin-view-actions">
+          <button type="button" data-action="close-pin-view">Close</button>
+          <button type="button" class="danger" data-action="delete-pin">Delete</button>
         </div>
       </div>
     </div>
