@@ -180,6 +180,13 @@ async function handle(req, res) {
         // POST /api/tracks/<slug>/select-as-current
         const body = await readBody(req);
         if (body?.action === 'select') {
+          // Don't materialise progress entries for slugs the user might have
+          // typo'd into the URL — without this guard, navigating to
+          // #/t/<anything>/ would silently leave a permanent ghost course
+          // on the home view.
+          if (!(await readTrackJson(trackSlug))) {
+            return sendJSON(res, 404, { ok: false, error: 'track not found' });
+          }
           await setCurrentTrack(trackSlug);
           return sendJSON(res, 200, { ok: true });
         }

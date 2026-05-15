@@ -553,6 +553,31 @@ let _lessonDetails = {}; // slug -> summary
 let _progress = { current_track: null, tracks: {} };
 let currentTrack = null;
 
+// In-memory cache of valid track slugs, refreshed on demand. Used by route()
+// to gate slugs before any track-scoped fetch — without this a typo'd URL
+// would trigger 404s + ghost-course creation. /api/tracks lists every
+// real track on disk (independent of progress.json's "selected" state).
+let _trackSlugs = null;
+let _trackSlugsFetchedAt = 0;
+async function trackExists(slug) {
+  if (!slug) return false;
+  // Positive cache hit: trust it (tracks rarely vanish underfoot).
+  if (_trackSlugs && _trackSlugs.has(slug)) return true;
+  // Miss → always refetch. Negative-caching breaks the case where the user
+  // just created the track in this same tab (so the cache is "fresh" but
+  // doesn't yet contain it).
+  try {
+    const r = await fetch('/api/tracks').then((x) => x.json()).catch(() => null);
+    if (r?.tracks) {
+      _trackSlugs = new Set(r.tracks.map((t) => t.slug));
+      _trackSlugsFetchedAt = Date.now();
+      return _trackSlugs.has(slug);
+    }
+  } catch {}
+  return false;
+}
+function invalidateTrackSlugCache() { _trackSlugs = null; }
+
 async function loadList() {
   const wantDetail = !!currentTrack;
   const lessonsUrl = currentTrack
@@ -1009,10 +1034,20 @@ const materialViewer = (() => {
 
   // Persist width across page loads. Clamp to a sane range.
   const STORE_KEY = 'sg.materialWidth';
-  function setWidth(w) {
+  // During drag we update the CSS variable on every pointermove (cheap) but
+  // skip the localStorage write + outline-layout recomputation — both are
+  // synchronous DOM/storage work that turns a smooth drag into a stutter.
+  // commitWidth() flushes the slow path on pointerup.
+  let _lastWidth = 420;
+  function setWidth(w, opts = {}) {
     const clamped = Math.max(280, Math.min(900, Math.round(w)));
+    _lastWidth = clamped;
     document.documentElement.style.setProperty('--sg-material-width', clamped + 'px');
-    try { localStorage.setItem(STORE_KEY, String(clamped)); } catch {}
+    if (!opts.transient) commitWidth();
+  }
+  function commitWidth() {
+    try { localStorage.setItem(STORE_KEY, String(_lastWidth)); } catch {}
+    try { updateOutlineLayout?.(); } catch {}
   }
   function loadWidth() {
     let v;
@@ -1088,8 +1123,19 @@ const materialViewer = (() => {
       `<br><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open / download ↗</a></div>`;
   }
 
+  // Below this width the third column is hidden via CSS (the prose would
+  // get crushed). Falling back to a new tab is less confusing than
+  // toggling state that doesn't show up on screen.
+  const NARROW_PX = 1100;
+  function isNarrow() { return window.innerWidth <= NARROW_PX; }
+
   function open(track, name, opts = {}) {
     if (!track || !name) return;
+    if (isNarrow()) {
+      const url = urlFor(track, name, opts.page);
+      window.open(url, '_blank', 'noopener');
+      return;
+    }
     const app = getApp();
     if (!app) return;
     const samePdfDifferentPage =
@@ -1104,6 +1150,11 @@ const materialViewer = (() => {
     root.setAttribute('aria-hidden', 'false');
     app.classList.add('material-open');
     syncSidebarActive();
+    try { updateOutlineLayout?.(); } catch {}
+    // Move the .is-active highlight to the chip that triggered this open
+    // *before* the same-PDF-page-swap early return — otherwise hash-only
+    // updates leave the previous chip glowing.
+    flashActiveCite(opts.source || null);
     // For PDFs, if just the page changed, swap the iframe hash so the
     // viewer scrolls without a hard reload when possible.
     if (samePdfDifferentPage) {
@@ -1115,7 +1166,6 @@ const materialViewer = (() => {
       }
     }
     render();
-    flashActiveCite(opts.source || null);
   }
 
   function close() {
@@ -1128,6 +1178,7 @@ const materialViewer = (() => {
     nameEl.textContent = '';
     syncSidebarActive();
     clearActiveCite();
+    try { updateOutlineLayout?.(); } catch {}
   }
 
   function toggle(track, name) {
@@ -1149,16 +1200,26 @@ const materialViewer = (() => {
   }
 
   // Drag-resize. The handle sits on the viewer's right edge; dragging
-  // changes --sg-material-width which the grid template reads.
+  // changes --sg-material-width which the grid template reads. We
+  // coalesce moves with rAF — pointermove fires faster than the screen
+  // refreshes and CSS-var writes that don't paint are wasted work.
   let dragStartX = 0;
   let dragStartW = 0;
+  let dragPendingX = 0;
+  let dragRaf = 0;
+  function applyDrag() {
+    dragRaf = 0;
+    setWidth(dragStartW + (dragPendingX - dragStartX), { transient: true });
+  }
   function onDragMove(ev) {
-    const dx = ev.clientX - dragStartX;
-    setWidth(dragStartW + dx);
+    dragPendingX = ev.clientX;
+    if (!dragRaf) dragRaf = requestAnimationFrame(applyDrag);
   }
   function onDragEnd() {
     document.removeEventListener('pointermove', onDragMove);
     document.removeEventListener('pointerup', onDragEnd);
+    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; applyDrag(); }
+    commitWidth();
     const app = getApp();
     if (app) app.classList.remove('material-dragging');
     resizeEl.classList.remove('dragging');
@@ -1167,11 +1228,15 @@ const materialViewer = (() => {
     if (ev.button !== 0) return;
     ev.preventDefault();
     dragStartX = ev.clientX;
+    dragPendingX = ev.clientX;
     const cs = getComputedStyle(document.documentElement).getPropertyValue('--sg-material-width');
     dragStartW = parseInt(cs, 10) || root.getBoundingClientRect().width || 420;
     const app = getApp();
     if (app) app.classList.add('material-dragging');
     resizeEl.classList.add('dragging');
+    // Capture pointer so we keep getting move events even when the cursor
+    // briefly enters the iframe / sidebar during a fast drag.
+    try { resizeEl.setPointerCapture(ev.pointerId); } catch {}
     document.addEventListener('pointermove', onDragMove);
     document.addEventListener('pointerup', onDragEnd);
   });
@@ -1182,6 +1247,13 @@ const materialViewer = (() => {
     const cs = getComputedStyle(document.documentElement).getPropertyValue('--sg-material-width');
     const w = parseInt(cs, 10) || 420;
     setWidth(w + (ev.key === 'ArrowRight' ? 16 : -16));
+  });
+
+  // If the user drags the browser below the narrow breakpoint while the
+  // viewer is open, the CSS hides the column but JS state (and the sidebar
+  // highlight) would otherwise lie about what's visible. Close it.
+  window.addEventListener('resize', () => {
+    if (!root.hidden && isNarrow()) close();
   });
 
   // Close with Esc when viewer is the focused/active region.
@@ -1247,11 +1319,15 @@ document.addEventListener('click', (ev) => {
   }
 });
 
-// Keyboard support for the material rows (Enter/Space).
+// Keyboard support for the material rows (Enter/Space). Only fire when the
+// row itself is the keydown target — pressing Space on a nested button
+// (e.g. the × delete) has its own native click semantics and must not also
+// trigger toggle on the parent row.
 document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Enter' && ev.key !== ' ') return;
-  const node = ev.target.closest('[data-action="open-material"]');
-  if (!node) return;
+  const node = ev.target;
+  if (!(node instanceof HTMLElement)) return;
+  if (node.dataset?.action !== 'open-material') return;
   ev.preventDefault();
   materialViewer.toggle(node.dataset.track || currentTrack, node.dataset.name);
 });
@@ -1787,7 +1863,10 @@ document.addEventListener('click', async (ev) => {
   } else if (action === 'copy-thread-md') {
     ev.preventDefault();
     ev.stopPropagation();
-    if (!threadId || !chatSelection) return;
+    // Nothing to copy if the conversation is empty. In tutor mode (no
+    // selection / no threadId) we still copy — render as a plain Q/A
+    // transcript without the "selected from" preamble.
+    if (!chatHistory?.length) return;
     const md = threadToMd({
       id: threadId,
       lesson: currentSlug,
@@ -1811,14 +1890,21 @@ document.addEventListener('click', async (ev) => {
 
 function threadToMd(thread) {
   const lines = [];
-  lines.push(`# btw chat — ${(thread.updated_at || '').slice(0, 10)}`);
+  const day = (thread.updated_at || '').slice(0, 10);
+  const hasSelection = !!thread.selection;
+  lines.push(`# ${hasSelection ? 'btw' : 'tutor'} chat — ${day}`);
   lines.push('');
-  lines.push(`> _Selected from_ \`lessons/${thread.lesson}.md\``);
-  lines.push('>');
-  for (const line of String(thread.selection || '').split('\n')) {
-    lines.push('> ' + line);
+  if (hasSelection) {
+    lines.push(`> _Selected from_ \`lessons/${thread.lesson}.md\``);
+    lines.push('>');
+    for (const line of String(thread.selection).split('\n')) {
+      lines.push('> ' + line);
+    }
+    lines.push('');
+  } else if (thread.lesson) {
+    lines.push(`> _Lesson context_ \`lessons/${thread.lesson}.md\``);
+    lines.push('');
   }
-  lines.push('');
   for (const m of thread.history || []) {
     if (m.role === 'user') {
       lines.push(`**Q:** ${m.content}`);
@@ -2352,17 +2438,20 @@ function wireChatResize(panel) {
 // every overlap — recompute on open/close/resize.
 function updateOutlineLayout() {
   const chatOpen = document.body.classList.contains('sg-chat-open');
-  if (!chatOpen) {
+  const matEl = document.getElementById('material-viewer');
+  const matOpen = !!(matEl && !matEl.hidden && window.innerWidth > 1100);
+  if (!chatOpen && !matOpen) {
     document.body.classList.remove('outline-no-room');
     return;
   }
   const chatPanel = document.querySelector('.sg-chat-panel.show');
-  const chatW = chatPanel ? chatPanel.getBoundingClientRect().width : 440;
+  const chatW = chatOpen ? (chatPanel ? chatPanel.getBoundingClientRect().width : 440) : 0;
+  const matW = matOpen ? matEl.getBoundingClientRect().width : 0;
   const sb = document.getElementById('sidebar');
   const sbW = sb ? sb.getBoundingClientRect().width : 256;
-  // Need: sidebar + content-body padding + prose 896 + gap 72 + rail 320 + chat
-  // → vp >= sbW + 32 + 896 + 72 + 320 + chatW = sbW + 1320 + chatW
-  const needed = sbW + 1320 + chatW;
+  // Need: sidebar + material viewer (if open) + content-body padding +
+  // prose 896 + gap 72 + rail 320 + chat (if open) = sbW + matW + 1320 + chatW
+  const needed = sbW + matW + 1320 + chatW;
   document.body.classList.toggle('outline-no-room', window.innerWidth < needed);
 }
 window.addEventListener('resize', updateOutlineLayout);
@@ -3208,6 +3297,17 @@ async function route() {
     viewReader.hidden = false;
     restoreSidebarState();
     if (currentTrack !== r.slug) {
+      // Reject unknown slugs up-front (URL typos) so we don't trigger a
+      // 404 in the network log and don't materialise a ghost course.
+      // Use /api/tracks (authoritative inventory of all tracks on disk) —
+      // /api/progress would falsely reject brand-new tracks that haven't
+      // been selected yet (e.g. just created via the dialog, or via API).
+      const slugKnown = await trackExists(r.slug);
+      if (!slugKnown) {
+        currentTrack = null;
+        location.hash = '#/';
+        return;
+      }
       currentTrack = r.slug;
       try {
         await fetch(`/api/tracks/${encodeURIComponent(r.slug)}`, {
@@ -3602,6 +3702,7 @@ document.addEventListener('click', async (ev) => {
     try {
       const r = await fetch(`/api/tracks/${encodeURIComponent(slug)}`, { method: 'DELETE' }).then((r) => r.json());
       if (!r.ok) throw new Error(r.error || 'delete failed');
+      invalidateTrackSlugCache();
       renderHome();
     } catch (e) {
       alert('delete failed: ' + e.message);
@@ -3641,6 +3742,7 @@ importTrackFileInput.addEventListener('change', async (ev) => {
       body: buf,
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'import failed');
+    invalidateTrackSlugCache();
     setStatus(`imported as "${r.slug}"`);
     location.hash = `#/t/${encodeURIComponent(r.slug)}/`;
   } catch (e) {
@@ -3665,6 +3767,7 @@ newTrackForm.addEventListener('submit', async (ev) => {
       }),
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'create failed');
+    invalidateTrackSlugCache();
     newTrackDialog.close();
     newTrackForm.reset();
     document.getElementById('nt-emoji').value = '📘';
