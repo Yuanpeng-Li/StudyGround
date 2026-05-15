@@ -3204,8 +3204,11 @@ body.sg-chat-open .tutor-fab {
   gap: 0;
   /* Hard-bound the layout to viewport height so no single column (e.g. a
      long materials list) can push the page taller and scroll the form
-     out of view. Each pane handles its own internal scroll below. */
-  height: calc(100vh - 4rem);
+     out of view. Each pane handles its own internal scroll below.
+     4rem leaves room for the header above; 2rem leaves room for the
+     position:fixed status footer at the bottom — without this the
+     "say anything…" input bar overlaps the footer. */
+  height: calc(100vh - 4rem - 2rem);
   box-sizing: border-box;
   overflow: hidden;
 }
