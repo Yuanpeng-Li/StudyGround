@@ -717,6 +717,20 @@ function mergeQuestionBlocks(root) {
   }
 }
 
+// Markdown tables sit directly in the prose; wrap each in .sg-table-wrap
+// so wide tables scroll horizontally without breaking the natural cell
+// layout (the old `display: block` on <table> killed border rendering).
+function wrapTables(root) {
+  if (!root) return;
+  for (const t of root.querySelectorAll('main table, table')) {
+    if (t.parentElement?.classList.contains('sg-table-wrap')) continue;
+    const wrap = document.createElement('div');
+    wrap.className = 'sg-table-wrap';
+    t.replaceWith(wrap);
+    wrap.appendChild(t);
+  }
+}
+
 // Pull each <div class="sg-feedback" data-exercise="X"> into the matching
 // <div class="sg-exercise" data-name="X"> as a footer section. The two
 // blocks describe the same loop (write code → run check → see feedback);
@@ -1217,6 +1231,7 @@ async function loadLesson(slug) {
   decorateCodeBlocks(view);
   mergeQuestionBlocks(view);
   mergeFeedbackIntoExercise(view);
+  wrapTables(view);
   // Title bar may contain $math$ from the frontmatter. Render it via md (inline
   // grammar so no <p> wrapper), then strip the duplicated katex-mathml clone.
   const titleSrc = meta.title || slug;

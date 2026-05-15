@@ -1632,40 +1632,63 @@ main blockquote {
 }
 main blockquote > :first-child { margin-top: 0; }
 main blockquote > :last-child { margin-bottom: 0; }
-/* Tables (markdown-it default rendering). Without explicit styles the
-   browser falls back to bare-text columns which look broken in a serif
-   reading column. */
+/* Tables — Claude-docs style: no outer border, subtle row separators
+   only, header set apart by weight + a slightly darker bottom rule. No
+   zebra striping (too noisy for serif body text); a hover wash gives
+   feedback when scanning rows. The table is wrapped in
+   `.sg-table-wrap` by main.js so horizontal overflow scrolls cleanly
+   without breaking the table's natural cell layout. */
+.sg-table-wrap {
+  margin: 1.4rem 0;
+  overflow-x: auto;
+  /* Soft bottom hint so a clipped right edge is visible on overflow. */
+  background:
+    linear-gradient(to right, var(--bg) 30%, transparent),
+    linear-gradient(to right, transparent, var(--bg) 70%) 100% 0,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--text) 6%, transparent), transparent),
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--text) 6%, transparent), transparent) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
 main table {
   width: 100%;
-  margin: 1.1rem 0;
+  margin: 0;
   border-collapse: collapse;
   font-size: 0.92rem;
-  display: block;            /* enables horizontal scroll on overflow */
-  overflow-x: auto;
 }
-main table thead {
-  background: var(--bg-sunken);
-}
-main table th,
-main table td {
-  padding: 0.55rem 0.85rem;
-  border: 1px solid var(--border);
-  text-align: left;
-  vertical-align: top;
-  line-height: 1.5;
-}
-main table th {
+main table thead th {
   font-weight: 600;
+  text-align: left;
+  vertical-align: bottom;
+  padding: 0.55rem 0.95rem 0.45rem;
+  border-bottom: 1.5px solid var(--border-strong);
   color: var(--text-strong);
   white-space: nowrap;
+  font-family: var(--font-sans);
+  letter-spacing: 0.005em;
 }
-main table tbody tr:nth-child(even) {
-  background: color-mix(in srgb, var(--bg-sunken) 50%, transparent);
+main table tbody td {
+  padding: 0.6rem 0.95rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  line-height: 1.55;
+}
+main table tbody tr:last-child td {
+  border-bottom: none;
+}
+main table tbody tr {
+  transition: background 100ms ease;
+}
+main table tbody tr:hover {
+  background: color-mix(in srgb, var(--bg-sunken) 65%, transparent);
 }
 main table code {
   /* Inside table cells, inline code shouldn't have a heavy border. */
   border: none;
-  padding: 0.05em 0.3em;
+  background: var(--bg-sunken);
+  padding: 0.08em 0.36em;
+  font-size: 0.86em;
 }
 main ul, main ol {
   padding-left: 1.4rem;
