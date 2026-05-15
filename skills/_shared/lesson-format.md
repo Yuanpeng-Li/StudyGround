@@ -53,28 +53,32 @@ Three bullets max.
 
 ## Markers (studyground-specific)
 
-### `?>` — main-thread question (NOT pre-answered)
+### `?>` — main-thread question (pre-answered, folded)
 
-Place where a thoughtful student would pause and ask. **Do not write the answer.**
-The user clicks the marker in the web UI to ask; an answer is then filled in.
+A question where a thoughtful student would pause. **Always pre-write the
+answer.** The reader renders it as a click-to-expand callout, defaulting
+to collapsed so the learner can think first, then peek.
 
 Format:
 
 ```markdown
 ?> Question text in the student's voice
 
-<!-- answer:pending -->
-```
-
-After the user clicks ask, the `<!-- answer:pending -->` line is replaced with:
-
-```markdown
 <!-- answer:start -->
-The answer, written as if continuing the lesson narrative.
+The answer, written as if continuing the lesson narrative. Match the
+voice + depth of the surrounding prose; usually 1-4 sentences, but go
+longer if the answer genuinely needs it.
 <!-- answer:end -->
 ```
 
-So the final shape becomes part of the lesson body.
+The visual difference from `?>>` is just palette: `?>` is the blue
+"main-thread" callout (this question is worth the pause), `?>>` is the
+coral "deeper" callout (a tangent the curious might wonder about). Both
+fold the same way.
+
+(Legacy: an older `<!-- answer:pending -->` marker — meaning "user
+clicks Ask to generate the answer on demand" — is still supported by the
+reader as a fallback, but new lessons should always pre-write.)
 
 ### `?>>` — btw / tangential question (pre-answered, folded)
 

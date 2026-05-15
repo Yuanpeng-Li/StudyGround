@@ -106,7 +106,7 @@ else {
   if (qDet.summaryHasMarker) { console.log(`FAIL: q summary still shows ?> marker (${qDet.summaryText})`); failed++; }
   if (!qDet.summaryHasLabel || qDet.summaryLabelText !== 'q') { console.log(`FAIL: q label missing/wrong (${qDet.summaryLabelText})`); failed++; }
   if (!qDet.hasBody) { console.log('FAIL: q has no body wrapper'); failed++; }
-  if (!qDet.open) { console.log('FAIL: q with pre-written answer should be open by default'); failed++; }
+  if (qDet.open) { console.log('FAIL: q with pre-written answer should default to collapsed'); failed++; }
 }
 if (!btwDet) { console.log('FAIL: no merged btw details found'); failed++; }
 else {

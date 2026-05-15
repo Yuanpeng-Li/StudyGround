@@ -23,7 +23,7 @@ See `_shared/lesson-format.md` for the full spec. Highlights:
 - H2 sections; never deeper than H3
 - Math with `$...$` and `$$...$$`
 - Code with fenced blocks; ` ```python run` for in-browser executable, plain ` ```python` for read-only
-- `?>` markers: write the question only, **immediately followed by a single line** `<!-- answer:pending -->`. **Do not write the answer yourself** — the user will click "Ask" later and a separate skill fills it in.
+- `?>` markers: write the question AND a pre-written answer wrapped in `<!-- answer:start --> … <!-- answer:end -->` (1-4 sentences, matching the lesson's voice — longer only if the answer truly needs it). The reader folds these by default so the learner can pause and think before peeking.
 - `?>>` markers: write the question AND a short pre-answer wrapped in `<details>` with `<summary>deeper</summary>`. Keep btw answers 1–3 sentences.
 - `:::exercise <name>` containers for hands-on practice (creates `exercises/<name>/`)
 

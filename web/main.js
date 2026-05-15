@@ -659,13 +659,16 @@ function mergeQuestionBlocks(root) {
   // The markdown rule emits data-kind="main" for `?>` questions — match
   // that explicitly so we don't accidentally re-process the .btw blocks
   // already merged above.
+  //
+  // Both pending and answered Qs default to COLLAPSED, mirroring the
+  // deeper callout. The learner pauses, takes a guess, then clicks the
+  // summary to reveal. Answers are pre-written in modern lessons; the
+  // legacy `<!-- answer:pending -->` shape still works for old files
+  // (the Ask button shows up inside the body when expanded).
   for (const q of [...root.querySelectorAll('.sg-question:not(.btw)')]) {
     const sibling = nextEl(q);
     if (!sibling || !sibling.classList.contains('sg-answer')) continue;
-    const isAnswered = sibling.classList.contains('answered');
-    // Keep the .sg-answer element itself as the body — preserves its
-    // dataset/handlers (the Ask button is wired through event delegation).
-    q.replaceWith(buildMerged(q, [sibling], /* open */ isAnswered));
+    q.replaceWith(buildMerged(q, [sibling], /* open */ false));
   }
 
   // Defensive fix-up for LLM-malformed details: when the `learn` / `next`
@@ -707,8 +710,10 @@ function mergeQuestionBlocks(root) {
       (n) => !(n.nodeType === 1 && n.tagName === 'SUMMARY'),
     );
     // Default: deeper (btw) collapsed, q open (the answer is right there).
-    const openByDefault = kind === 'main' ? true : !!det.open;
-    det.replaceWith(buildMerged(fakeQ, bodyNodes, openByDefault));
+    // Same rule as the primary merge above: both Q and deeper default
+    // to collapsed; the only thing that overrides is an explicit
+    // `<details open>` in the source markdown.
+    det.replaceWith(buildMerged(fakeQ, bodyNodes, !!det.open));
   }
 }
 

@@ -19,7 +19,7 @@ Generate the next lesson in the user's current track.
 ## Pacing
 - 5–10 min read per lesson
 - One main concept per lesson
-- 1–2 `?>` markers where a thoughtful student would pause. Each `?>` MUST be followed by a single line `<!-- answer:pending -->` and NO pre-written answer.
+- 1–2 `?>` markers where a thoughtful student would pause. Each `?>` MUST be followed by `<!-- answer:start --> … <!-- answer:end -->` containing a **pre-written answer** in the lesson's voice (1-4 sentences, longer if genuinely needed). Don't leave it pending — the reader expects answers inline and folds them by default.
 - 0–3 `?>>` btw markers, each with a short pre-written answer inside `<details><summary>deeper</summary>...</details>`.
 - 0–1 `:::exercise` blocks
 

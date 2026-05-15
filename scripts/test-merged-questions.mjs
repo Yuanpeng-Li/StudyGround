@@ -156,7 +156,7 @@ if (!afterQClick.qOpen || !afterQClick.askVisible) { console.log('FAIL: clicking
 if (!afterBtwClick.btwOpen || !afterBtwClick.bodyHasShortText) { console.log('FAIL: clicking deeper did not expand body'); failed++; }
 if (afterBtwCollapse.btwOpen) { console.log('FAIL: re-clicking deeper did not collapse it'); failed++; }
 if (before.qAnsweredTag !== 'DETAILS') { console.log('FAIL: answered q is not merged'); failed++; }
-if (!before.qAnsweredOpen) { console.log('FAIL: answered q is not open by default'); failed++; }
+if (before.qAnsweredOpen) { console.log('FAIL: answered q should now default to collapsed (matches deeper)'); failed++; }
 if (!before.qAnsweredBodyText?.includes('answer text lives')) { console.log(`FAIL: answered q body missing expected text (got ${JSON.stringify(before.qAnsweredBodyText)})`); failed++; }
 if (before.qAnsweredHasAsk) { console.log('FAIL: answered q still has an Ask button'); failed++; }
 
