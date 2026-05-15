@@ -42,44 +42,79 @@
       </main>
     </div>
 
-    <!-- INTAKE VIEW -->
-    <div id="view-intake" class="view" hidden>
+    <!-- INTAKE / PLAN VIEW (split layout when curriculum exists) -->
+    <div id="view-intake" class="view" hidden data-phase="pre-plan">
       <header class="home-header">
         <a href="#/" class="brand-link">StudyGround</a>
         <span class="intake-track-name" id="intake-track-name">planning…</span>
         <button class="theme-toggle" title="theme">auto</button>
       </header>
       <main class="intake-main">
-        <div class="intake-hero">
-          <h2>Meet your tutor</h2>
-          <p class="intake-sub">Talk to them like a real person — what you want to be able to do, what you've already tried, what you've read. They'll draft a curriculum once there's enough to go on; or hit <b>Plan curriculum →</b> yourself whenever you're ready.</p>
-        </div>
-        <section class="intake-materials">
-          <div class="intake-materials-head">
-            <span class="intake-materials-label">Materials</span>
-            <span class="intake-materials-hint">— optional: drop in PDFs, notes, or cheatsheets your tutor should ground the course in</span>
-            <button type="button" class="intake-materials-add" data-action="add-intake-material">+ upload</button>
+        <div class="intake-chat-pane">
+          <div class="intake-hero">
+            <h2>Meet your tutor</h2>
+            <p class="intake-sub">Talk to them like a real person — what you want to be able to do, what you've already tried, what you've read. They'll draft a curriculum once there's enough to go on; or hit <b>Plan curriculum →</b> yourself whenever you're ready.</p>
           </div>
-          <ul class="intake-materials-list" id="intake-materials-list">
-            <li class="hint">drop in PDFs / notes / cheatsheets — your tutor will see them</li>
-          </ul>
-        </section>
-        <div id="intake-messages" class="intake-messages"></div>
-        <form id="intake-form" class="intake-form">
-          <div class="sg-chat-input-wrap">
-            <textarea id="intake-input" name="q" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
-            <div class="sg-chat-input-bar">
-              <div class="intake-secondary-actions">
-                <button type="button" id="btn-finalize" data-action="finalize-intake">Plan curriculum →</button>
+          <section class="intake-materials">
+            <div class="intake-materials-head">
+              <span class="intake-materials-label">Materials</span>
+              <span class="intake-materials-hint">— optional: drop in PDFs, notes, or cheatsheets your tutor should ground the course in</span>
+              <button type="button" class="intake-materials-add" data-action="add-intake-material">+ upload</button>
+            </div>
+            <ul class="intake-materials-list" id="intake-materials-list">
+              <li class="hint">drop in PDFs / notes / cheatsheets — your tutor will see them</li>
+            </ul>
+          </section>
+          <div id="intake-messages" class="intake-messages"></div>
+          <form id="intake-form" class="intake-form">
+            <div class="sg-chat-input-wrap">
+              <textarea id="intake-input" name="q" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
+              <div class="sg-chat-input-bar">
+                <div class="intake-secondary-actions">
+                  <button type="button" id="btn-finalize" data-action="finalize-intake">Plan curriculum →</button>
+                </div>
+                <button type="submit" class="sg-chat-send" aria-label="Send" title="Send (Enter)">
+                  <svg class="sg-chat-send-icon-send" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                  <svg class="sg-chat-send-icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                </button>
               </div>
-              <button type="submit" class="sg-chat-send" aria-label="Send" title="Send (Enter)">
-                <svg class="sg-chat-send-icon-send" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-                <svg class="sg-chat-send-icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
-              </button>
+            </div>
+          </form>
+        </div>
+
+        <aside class="intake-plan-pane" id="intake-plan-pane">
+          <div class="intake-plan-head">
+            <span class="intake-plan-icon" aria-hidden="true">📋</span>
+            <span class="intake-plan-title">Curriculum</span>
+            <span class="intake-plan-subtitle" id="intake-plan-subtitle"></span>
+            <div class="intake-plan-actions">
+              <button type="button" id="btn-regenerate-plan" data-action="regenerate-plan" title="Re-run the planner with the chat + comments so far">🔄 Regenerate</button>
+              <button type="button" class="primary" id="btn-start-learning" data-action="start-learning" title="Open the reader and start lesson 01">Start learning →</button>
             </div>
           </div>
-        </form>
+          <div class="intake-plan-banner" id="intake-plan-banner" hidden></div>
+          <div class="intake-plan-body" id="intake-plan-body">
+            <p class="hint">Plan will appear here once you hit <b>Plan curriculum →</b>.</p>
+          </div>
+          <div class="intake-plan-comments" id="intake-plan-comments" hidden>
+            <div class="intake-plan-comments-head">
+              <span>📌 Pending comments</span>
+              <span class="hint intake-plan-comments-hint">— flushed into the chat on next Regenerate</span>
+            </div>
+            <ul id="intake-plan-comments-list"></ul>
+          </div>
+        </aside>
       </main>
+
+      <!-- Floating popover for an inline comment on a curriculum selection -->
+      <div id="intake-comment-popover" class="intake-comment-popover" hidden>
+        <div class="intake-comment-popover-quote" id="intake-comment-popover-quote"></div>
+        <textarea id="intake-comment-popover-input" rows="2" placeholder="add a comment on this passage…"></textarea>
+        <div class="intake-comment-popover-actions">
+          <button type="button" data-action="cancel-inline-comment">Cancel</button>
+          <button type="button" class="primary" data-action="submit-inline-comment">Add comment</button>
+        </div>
+      </div>
     </div>
 
     <!-- READER VIEW -->
@@ -143,6 +178,7 @@
               <button id="outline-toggle" class="outline-toggle" type="button" aria-label="Toggle outline" aria-expanded="false" title="show outline">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="0.8" fill="currentColor"/><circle cx="4" cy="12" r="0.8" fill="currentColor"/><circle cx="4" cy="18" r="0.8" fill="currentColor"/></svg>
               </button>
+              <button id="btn-back-to-plan" data-action="back-to-plan" title="Back to plan / curriculum view">📋 Plan</button>
               <button id="btn-recap" title="Fold answered Q&A in this lesson">Recap</button>
               <button id="btn-next">Next →</button>
             </div>

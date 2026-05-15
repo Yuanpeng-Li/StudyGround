@@ -579,6 +579,19 @@ async function trackExists(slug) {
 function invalidateTrackSlugCache() { _trackSlugs = null; }
 
 async function loadList() {
+  // Without a current track the lessons endpoint 400s — that's noise in
+  // the console for callers like SSE handlers that don't know whether
+  // we've already navigated home. Bail early and refresh just progress.
+  if (!currentTrack) {
+    try {
+      const progressRes = await fetch('/api/progress').then((r) => r.json());
+      _progress = progressRes;
+    } catch {}
+    _allLessons = [];
+    _lessonDetails = {};
+    renderSidebarLessons();
+    return _allLessons;
+  }
   const wantDetail = !!currentTrack;
   const lessonsUrl = currentTrack
     ? `/api/lessons?track=${encodeURIComponent(currentTrack)}&detail=1`
@@ -3278,14 +3291,25 @@ const COVER_EMOJIS = [
 function renderEmojiPicker(pickerEl, hiddenInput) {
   if (!pickerEl || !hiddenInput) return;
   const current = hiddenInput.value || COVER_EMOJIS[0];
-  pickerEl.innerHTML = COVER_EMOJIS.map((e) =>
-    `<button type="button" class="emoji-pick${e === current ? ' is-selected' : ''}" data-emoji="${escapeHtml(e)}" aria-label="${escapeHtml(e)}" title="${escapeHtml(e)}">${escapeHtml(e)}</button>`
+  // If the current value isn't in the curated set (e.g. an older track
+  // stored a custom emoji), prepend it as a "custom" tile so editing
+  // doesn't silently overwrite it on save.
+  const list = COVER_EMOJIS.includes(current)
+    ? COVER_EMOJIS
+    : [current, ...COVER_EMOJIS];
+  pickerEl.innerHTML = list.map((e) =>
+    `<button type="button" class="emoji-pick${e === current ? ' is-selected' : ''}${!COVER_EMOJIS.includes(e) ? ' is-custom' : ''}" data-emoji="${escapeHtml(e)}" aria-label="${escapeHtml(e)}" title="${escapeHtml(e)}${!COVER_EMOJIS.includes(e) ? ' (current — keep as-is)' : ''}">${escapeHtml(e)}</button>`
   ).join('');
 }
 function setEmojiPickerValue(pickerEl, hiddenInput, value) {
   if (!pickerEl || !hiddenInput) return;
-  const v = COVER_EMOJIS.includes(value) ? value : COVER_EMOJIS[0];
+  const v = value || COVER_EMOJIS[0];
   hiddenInput.value = v;
+  // If this is an out-of-list value, re-render so we get the custom tile.
+  if (!COVER_EMOJIS.includes(v) && !pickerEl.querySelector(`.emoji-pick[data-emoji="${CSS.escape(v)}"]`)) {
+    renderEmojiPicker(pickerEl, hiddenInput);
+    return;
+  }
   for (const b of pickerEl.querySelectorAll('.emoji-pick')) {
     b.classList.toggle('is-selected', b.dataset.emoji === v);
   }
@@ -3327,6 +3351,13 @@ function parseRoute() {
 
 async function route() {
   const r = parseRoute();
+  // Leaving the reader (or switching to a different reader track) must
+  // tear down the material viewer — otherwise it shows the previous
+  // track's PDF over an unrelated view.
+  const leavingReader = r.name !== 'reader' || (r.slug && currentTrack && currentTrack !== r.slug);
+  if (leavingReader) {
+    try { materialViewer?.close?.(); } catch {}
+  }
   if (r.name === 'intake') {
     viewHome.hidden = true;
     viewReader.hidden = true;
@@ -3352,13 +3383,25 @@ async function route() {
         return;
       }
       currentTrack = r.slug;
+      // Confirm the track is still alive — a stale positive cache (e.g.
+      // the track was deleted out-of-band: CLI, another tab) would let
+      // us walk straight into a 404. If select 404s, invalidate the
+      // cache and bounce home.
+      let selectOk = true;
       try {
-        await fetch(`/api/tracks/${encodeURIComponent(r.slug)}`, {
+        const sr = await fetch(`/api/tracks/${encodeURIComponent(r.slug)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'select' }),
         });
+        selectOk = sr.ok;
       } catch {}
+      if (!selectOk) {
+        invalidateTrackSlugCache();
+        currentTrack = null;
+        location.hash = '#/';
+        return;
+      }
       const lessons = await loadList();
       // Auto-redirect to intake if there's nothing here yet
       if (!lessons.length) {
@@ -3405,14 +3448,21 @@ async function route() {
   }
 }
 
-// ---------- intake view ----------
+// ---------- intake / plan view ----------
 let intakeTrack = null;
 let intakeHistory = [];
+// A "comment" is a user turn whose content begins with COMMENT_TAG. We use
+// the chat history as the source of truth for inline comments so they
+// survive a reload — pendingComments below is just a UI cache derived from
+// history (everything after the most recent assistant turn).
+const COMMENT_TAG = '<!--studyground:comment-->';
+let pendingComments = [];
 const intakeMessagesEl = () => document.getElementById('intake-messages');
 
 async function enterIntake(slug) {
   intakeTrack = slug;
   intakeHistory = [];
+  pendingComments = [];
   const msgsEl = document.getElementById('intake-messages');
   msgsEl.innerHTML = '';
   document.getElementById('intake-input').value = '';
@@ -3433,15 +3483,13 @@ async function enterIntake(slug) {
     intakeHistory = past.map((m) => ({ role: m.role, content: m.content }));
     for (const m of past) appendIntakeMsg(m.role, m.content);
   } catch {}
-  // If curriculum already exists, drop a small note at the bottom so the
-  // learner knows they can jump straight to reading.
+  // Phase = has-plan iff curriculum.md exists. CSS hides the right pane in
+  // pre-plan via [data-phase].
   const cur = await fetch(`/api/tracks/${encodeURIComponent(slug)}/curriculum`).then((r) => r.json()).catch(() => null);
-  if (cur?.ok) {
-    const note = document.createElement('div');
-    note.className = 'intake-msg assistant intake-curriculum-note';
-    note.innerHTML = `<p>This course already has a curriculum — keep chatting to refine it, or <a href="#/t/${encodeURIComponent(slug)}/">→ open reader</a>.</p>`;
-    msgsEl.appendChild(note);
-  }
+  setIntakePhase(cur?.ok ? 'has-plan' : 'pre-plan');
+  if (cur?.ok) renderPlanPane(cur.content || '');
+  pendingComments = derivePendingComments(intakeHistory);
+  renderPendingComments();
   // Surface any uploaded materials for this track
   loadMaterials(
     slug,
@@ -3450,6 +3498,94 @@ async function enterIntake(slug) {
   );
   // Don't auto-send a first turn — let the learner open the conversation.
   setTimeout(() => document.getElementById('intake-input').focus(), 50);
+}
+
+function setIntakePhase(phase) {
+  const root = document.getElementById('view-intake');
+  if (root) root.dataset.phase = phase;
+}
+
+function renderPlanPane(markdown) {
+  const body = document.getElementById('intake-plan-body');
+  const subtitle = document.getElementById('intake-plan-subtitle');
+  if (!body) return;
+  // Strip YAML frontmatter and surface `finalized:` as a small subtitle.
+  let finalized = '';
+  let mdText = markdown;
+  const fm = /^---\s*\n([\s\S]*?)\n---\s*\n?/m.exec(markdown);
+  if (fm) {
+    const block = fm[1];
+    const fmatch = /^finalized:\s*(.+)$/m.exec(block);
+    if (fmatch) finalized = fmatch[1].trim();
+    mdText = markdown.slice(fm[0].length);
+  }
+  body.innerHTML = md.render(mdText, {});
+  if (subtitle) subtitle.textContent = finalized ? `· finalized ${finalized}` : '';
+  // Banner: warn if there are completed lessons that may diverge from a fresh plan.
+  const banner = document.getElementById('intake-plan-banner');
+  const completed = _progress?.tracks?.[intakeTrack]?.completed || [];
+  if (banner) {
+    if (completed.length > 0) {
+      banner.hidden = false;
+      banner.textContent = `⚠ You've completed ${completed.length} lesson(s). Regenerating may diverge from them — existing lesson files won't be deleted, but their numbering may no longer match the new plan.`;
+    } else {
+      banner.hidden = true;
+      banner.textContent = '';
+    }
+  }
+}
+
+// Pending = user comments that came after the most recent assistant turn.
+// On each finalize the assistant turn (the regenerated curriculum reply)
+// pushes them into the past, so they auto-clear from the cache.
+function derivePendingComments(history) {
+  let lastAssistantIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') { lastAssistantIdx = i; break; }
+  }
+  const out = [];
+  for (let i = lastAssistantIdx + 1; i < history.length; i++) {
+    const m = history[i];
+    if (m.role !== 'user') continue;
+    const parsed = parseCommentMessage(m.content);
+    if (parsed) out.push({ ...parsed, _idx: i });
+  }
+  return out;
+}
+
+function parseCommentMessage(content) {
+  const text = String(content || '');
+  if (!text.startsWith(COMMENT_TAG)) return null;
+  const rest = text.slice(COMMENT_TAG.length).replace(/^\n+/, '');
+  const m = /^> "([\s\S]*?)"\n([\s\S]*)$/m.exec(rest);
+  if (!m) return null;
+  return { selection: m[1], comment: m[2].trim() };
+}
+
+function formatCommentMessage(selection, comment) {
+  const sel = (selection || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  return `${COMMENT_TAG}\n> "${sel}"\n${comment.trim()}`;
+}
+
+function renderPendingComments() {
+  const wrap = document.getElementById('intake-plan-comments');
+  const list = document.getElementById('intake-plan-comments-list');
+  if (!wrap || !list) return;
+  if (!pendingComments.length) {
+    wrap.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  wrap.hidden = false;
+  list.innerHTML = pendingComments.map((c, i) => `
+    <li>
+      <div class="pc-quote">
+        <span class="pc-quote-text">"${escapeHtml(c.selection.slice(0, 180))}${c.selection.length > 180 ? '…' : ''}"</span>
+        <span class="pc-comment">${escapeHtml(c.comment)}</span>
+      </div>
+      <button type="button" class="pc-remove" data-action="remove-pending-comment" data-idx="${i}" title="discard this comment (also drops it from the chat)" aria-label="discard">×</button>
+    </li>
+  `).join('');
 }
 
 let intakeStreamController = null;
@@ -3565,18 +3701,32 @@ function appendIntakeMsg(role, content) {
   const msg = document.createElement('div');
   msg.className = `intake-msg ${role}`;
   if (role === 'user') {
-    const body = document.createElement('div');
-    body.className = 'sg-chat-msg-body';
-    body.textContent = content;
-    msg.appendChild(body);
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'sg-chat-msg-edit-btn';
-    editBtn.dataset.action = 'edit-intake-msg';
-    editBtn.title = 'edit this message and re-run from here';
-    editBtn.setAttribute('aria-label', 'edit');
-    editBtn.textContent = '✎';
-    msg.appendChild(editBtn);
+    const parsed = parseCommentMessage(content);
+    if (parsed) {
+      // Inline-comment style: a quote of the highlighted passage + the
+      // user's note. Visually distinct via the .comment class (pinned
+      // badge + muted quote rail).
+      msg.classList.add('comment');
+      const body = document.createElement('div');
+      body.className = 'sg-chat-msg-body';
+      body.innerHTML =
+        `<span class="pc-quote-text">"${escapeHtml(parsed.selection)}"</span>` +
+        `<span class="pc-comment">${escapeHtml(parsed.comment)}</span>`;
+      msg.appendChild(body);
+    } else {
+      const body = document.createElement('div');
+      body.className = 'sg-chat-msg-body';
+      body.textContent = content;
+      msg.appendChild(body);
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'sg-chat-msg-edit-btn';
+      editBtn.dataset.action = 'edit-intake-msg';
+      editBtn.title = 'edit this message and re-run from here';
+      editBtn.setAttribute('aria-label', 'edit');
+      editBtn.textContent = '✎';
+      msg.appendChild(editBtn);
+    }
   } else if (content !== '…') {
     msg.innerHTML = md.render(content, {});
   } else {
@@ -3725,11 +3875,17 @@ document.addEventListener('click', async (ev) => {
   const action = t.dataset.action;
   if (action === 'open-new-track') {
     ev.preventDefault();
+    // Always start fresh — the form holds onto whatever the user clicked
+    // last time even if they hit Cancel, which is surprising.
+    newTrackForm.reset();
+    setEmojiPickerValue(_ntPicker, document.getElementById('nt-emoji'), COVER_EMOJIS[0]);
     newTrackDialog.showModal();
     setTimeout(() => newTrackDialog.querySelector('#nt-title').focus(), 30);
   } else if (action === 'close-dialog') {
     ev.preventDefault();
     newTrackDialog.close();
+    newTrackForm.reset();
+    setEmojiPickerValue(_ntPicker, document.getElementById('nt-emoji'), COVER_EMOJIS[0]);
   } else if (action === 'close-edit-dialog') {
     ev.preventDefault();
     editTrackDialog.close();
@@ -3980,13 +4136,41 @@ cmdList.addEventListener('click', (ev) => {
   if (it) { cmdDialog.close(); it.run(); }
 });
 
+// Centralised Escape dispatcher — fires in capture phase before any of the
+// per-feature handlers (palette / chat / viewer / outline popover), picks
+// the top-most open layer, closes only that one, and stops propagation so
+// only one layer closes per Esc press. Without this, every independent
+// document-level Esc handler fires on the same press and collapses
+// multiple layers at once.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  // Priority: cmd palette > chat panel > material viewer > outline popover.
+  if (cmdDialog?.open) {
+    cmdDialog.close();
+  } else if (document.querySelector('.sg-chat-panel.show')) {
+    // Inline the chat-Esc logic so we can stopImmediatePropagation here.
+    // If a turn is streaming, abort it; otherwise close the panel.
+    if (currentPanelKey && inflightStreams.has(currentPanelKey)) {
+      abortInflight(currentPanelKey);
+    } else {
+      closeChatPanel();
+    }
+  } else if (!document.getElementById('material-viewer')?.hidden) {
+    materialViewer?.close?.();
+  } else if (document.body.classList.contains('outline-pop-open')) {
+    setOutlinePopOpen(false);
+  } else {
+    return; // nothing to close; let other handlers (textarea, etc.) run
+  }
+  ev.stopImmediatePropagation();
+  ev.preventDefault();
+}, true); // capture phase
+
 document.addEventListener('keydown', (ev) => {
   const isCmdK = (ev.metaKey || ev.ctrlKey) && (ev.key === 'k' || ev.key === 'K');
   if (isCmdK) {
     ev.preventDefault();
     openCmdPalette();
-  } else if (ev.key === 'Escape' && cmdDialog.open) {
-    cmdDialog.close();
   } else if ((ev.metaKey || ev.ctrlKey) && ev.key === '/') {
     // ⌘/ — quick selection-to-btw shortcut (if anything selected in lesson)
     const winSel = window.getSelection();

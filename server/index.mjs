@@ -84,6 +84,30 @@ function contentTypeForMaterial(name) {
   return MATERIAL_MIME[ext] || 'application/octet-stream';
 }
 
+// Filesystem-safe filename that *preserves* Unicode letters and digits so
+// CJK / accented filenames survive a round-trip through the materials API
+// and stay linkable from [filename, p.N] citations. Strips path
+// separators, NUL / control characters, Windows-reserved chars (\ / : * ?
+// " < > |), and leading dots (so e.g. ".hiddenfile" can't be uploaded).
+// Collapses whitespace and dashes-only sequences. Caps at 120 chars
+// (filesystem norms; gives ext room).
+function sanitizeFilename(name) {
+  let s = String(name || '')
+    .replace(/[\x00-\x1f/\\:*?"<>|]+/g, '_')
+    .replace(/^\.+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length > 120) {
+    const dot = s.lastIndexOf('.');
+    if (dot > 0 && s.length - dot <= 12) {
+      s = s.slice(0, 120 - (s.length - dot)) + s.slice(dot);
+    } else {
+      s = s.slice(0, 120);
+    }
+  }
+  return s;
+}
+
 // Cap a chat history before persisting to disk. Tutor + thread JSONL files
 // would otherwise grow without bound (clients can PUT thousands of messages).
 // We keep the most recent entries; oldest get trimmed.
@@ -212,7 +236,12 @@ async function handle(req, res) {
           content = Buffer.concat(chunks);
         }
         if (!name) return sendJSON(res, 400, { ok: false, error: 'name required' });
-        const safeName = name.replace(/[^\w.\-]+/g, '_').slice(0, 120);
+        // Preserve Unicode letters/digits so CJK / accented filenames stay
+        // intact — `\w` is ASCII-only and would mangle 文献2024年.pdf to
+        // _2024_.pdf, which then can't be linked back by [filename, p.N]
+        // citations carrying the original name. Still strip path
+        // separators, control chars, and the Windows-reserved set.
+        const safeName = sanitizeFilename(name);
         if (!safeName) return sendJSON(res, 400, { ok: false, error: 'invalid name' });
         await ensureTrackDir(trackSlug);
         const materialsDir = join(STUDYGROUND_DIR, 'tracks', trackSlug, 'materials');
@@ -301,18 +330,13 @@ async function handle(req, res) {
   if (path === '/api/lessons') {
     const trackFilter = url.searchParams.get('track');
     const wantDetail = url.searchParams.get('detail') === '1';
+    if (!trackFilter) {
+      return sendJSON(res, 400, { ok: false, error: 'track query param required' });
+    }
     try {
-      if (trackFilter) {
-        const lessons = await listLessonsInTrack(trackFilter, { withSummary: wantDetail });
-        if (wantDetail) return sendJSON(res, 200, { ok: true, lessons });
-        return sendJSON(res, 200, { ok: true, lessons: lessons.map((l) => l.slug) });
-      }
-      const files = await readdir(join(STUDYGROUND_DIR, 'lessons'));
-      const list = files
-        .filter((f) => f.endsWith('.md'))
-        .map((f) => f.replace(/\.md$/, ''))
-        .sort();
-      return sendJSON(res, 200, { ok: true, lessons: list });
+      const lessons = await listLessonsInTrack(trackFilter, { withSummary: wantDetail });
+      if (wantDetail) return sendJSON(res, 200, { ok: true, lessons });
+      return sendJSON(res, 200, { ok: true, lessons: lessons.map((l) => l.slug) });
     } catch {
       return sendJSON(res, 200, { ok: true, lessons: [] });
     }
@@ -551,6 +575,27 @@ async function handle(req, res) {
         normalized,
       );
       return await loadTutorChat(trackSlug);
+    });
+  }
+
+  // POST /api/tutor/<track>/append — append a single user message to the
+  // tutor chat without spawning Claude. Used by the plan-mode inline-comment
+  // flow: the user highlights text in the curriculum, types a comment, and we
+  // record it as a user turn so it survives a reload and gets included on the
+  // next /api/intake finalize call.
+  if (path.endsWith('/append') && path.startsWith('/api/tutor/') && req.method === 'POST') {
+    const trackSlug = decodeURIComponent(path.slice('/api/tutor/'.length, -'/append'.length));
+    if (!isSafeSegment(trackSlug)) return rejectBadSegment(res, 'track slug', trackSlug);
+    if (!existsSync(trackDir(trackSlug))) return sendJSON(res, 404, { ok: false, error: 'track not found' });
+    const body = await readBody(req);
+    const role = body?.role || 'user';
+    const content = String(body?.content || '').trim();
+    if (role !== 'user') return sendJSON(res, 400, { ok: false, error: 'only user role allowed' });
+    if (!content) return sendJSON(res, 400, { ok: false, error: 'content required' });
+    return await runWithLock(`tutor:${trackSlug}`, res, async () => {
+      const data = await appendTutorChat(trackSlug, content, null);
+      const ts = data.history.length ? data.history[data.history.length - 1].ts : new Date().toISOString();
+      return { ts };
     });
   }
 
@@ -811,9 +856,7 @@ async function handle(req, res) {
     if (!found) return sendJSON(res, 404, { ok: false, error: 'not found' });
     if (req.method === 'DELETE') {
       try {
-        // Remove both the jsonl and any leftover legacy json
         if (existsSync(found.path)) await unlink(found.path);
-        if (found.legacy && existsSync(found.legacy)) await unlink(found.legacy);
         return sendJSON(res, 200, { ok: true });
       } catch (e) {
         return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
@@ -824,7 +867,7 @@ async function handle(req, res) {
       // PATCH — partial update (currently: rename via { name }).
       const body = await readBody(req);
       const now = new Date().toISOString();
-      const existing = await readChatJsonl(found.path, found.legacy);
+      const existing = await readChatJsonl(found.path);
       const m = existing.meta || {};
       const isRename = req.method === 'PATCH' || (body?.name !== undefined && !Array.isArray(body?.history));
       // For a rename-only call, keep the existing history; otherwise replace it.
@@ -855,7 +898,7 @@ async function handle(req, res) {
         return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
       }
     }
-    const data = await readThreadData(found.path, found.legacy);
+    const data = await readThreadData(found.path);
     if (!data) return sendJSON(res, 404, { ok: false, error: 'not found' });
     return sendJSON(res, 200, { ok: true, thread: data });
   }
@@ -913,13 +956,8 @@ async function handle(req, res) {
 // ---------- chat persistence (JSONL) ----------
 // First line is a meta record {type:'meta', ...}; each subsequent line is a
 // chat message {role, content, ts}. Appends are O(1) `appendFile` calls.
-// Legacy single-file JSON is auto-migrated on first read.
 
-async function readChatJsonl(jsonlPath, legacyJsonPath) {
-  // Prefer .jsonl. If only the legacy .json exists, migrate it in place.
-  if (!existsSync(jsonlPath) && legacyJsonPath && existsSync(legacyJsonPath)) {
-    await migrateChatJsonToJsonl(legacyJsonPath, jsonlPath);
-  }
+async function readChatJsonl(jsonlPath) {
   if (!existsSync(jsonlPath)) return { meta: null, history: [] };
   const raw = await readFile(jsonlPath, 'utf8');
   const lines = raw.split('\n');
@@ -934,28 +972,6 @@ async function readChatJsonl(jsonlPath, legacyJsonPath) {
     else if (obj.role) history.push(obj);
   }
   return { meta, history };
-}
-
-async function migrateChatJsonToJsonl(jsonPath, jsonlPath) {
-  try {
-    const old = JSON.parse(await readFile(jsonPath, 'utf8'));
-    const lines = [];
-    const meta = { type: 'meta' };
-    // Carry over whatever metadata the old shape had
-    for (const k of ['track', 'lesson', 'selection', 'created_at', 'id', 'kind']) {
-      if (old[k] !== undefined) meta[k] = old[k];
-    }
-    if (!meta.created_at) meta.created_at = old.updated_at || new Date().toISOString();
-    lines.push(JSON.stringify(meta));
-    for (const m of (old.history || [])) {
-      lines.push(JSON.stringify({ role: m.role, content: m.content, ts: m.ts || meta.created_at }));
-    }
-    await mkdir(dirname(jsonlPath), { recursive: true });
-    await writeFile(jsonlPath, lines.join('\n') + '\n');
-    await unlink(jsonPath).catch(() => {});
-  } catch (e) {
-    console.warn('[chat-migrate] failed for', jsonPath, e?.message);
-  }
 }
 
 // Write `lines` (records) to jsonl. If the file doesn't exist yet, prepend
@@ -994,18 +1010,12 @@ async function rewriteChatLines(jsonlPath, makeMeta, messages) {
 function tutorChatPath(track) {
   return join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.jsonl');
 }
-function tutorChatLegacyPath(track) {
-  return join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.json');
-}
 function threadJsonlPath(track, id) {
   return join(trackThreadsDir(track), `${id}.jsonl`);
 }
-function threadLegacyPath(track, id) {
-  return join(trackThreadsDir(track), `${id}.json`);
-}
 
 async function loadTutorChat(track) {
-  const { meta, history } = await readChatJsonl(tutorChatPath(track), tutorChatLegacyPath(track));
+  const { meta, history } = await readChatJsonl(tutorChatPath(track));
   return {
     track,
     history,
@@ -1016,11 +1026,14 @@ async function loadTutorChat(track) {
 async function appendTutorChat(track, userMessage, answer) {
   if (!isSafeSegment(track)) throw new Error('appendTutorChat: invalid track');
   const file = tutorChatPath(track);
-  const { history: existing } = await readChatJsonl(file, tutorChatLegacyPath(track));
+  const { history: existing } = await readChatJsonl(file);
   const now = new Date().toISOString();
   const msgs = [];
   if (userMessage) msgs.push({ role: 'user', content: userMessage, ts: now });
-  msgs.push({ role: 'assistant', content: answer, ts: now });
+  // answer is optional: the inline-comment append endpoint persists user-only
+  // turns (no Claude spawn) so the comment survives a page reload before the
+  // user clicks Regenerate.
+  if (answer != null) msgs.push({ role: 'assistant', content: answer, ts: now });
   // If the post-append history would exceed CHAT_HISTORY_MAX_MESSAGES, do
   // an atomic full rewrite that drops the oldest entries. The normal case
   // stays a cheap appendFile.
@@ -1038,7 +1051,6 @@ async function persistThread({ id, track, lesson, selection, question, answer })
   if (!track) throw new Error('persistThread requires track');
   await mkdir(trackThreadsDir(track), { recursive: true });
   const file = threadJsonlPath(track, id);
-  await readChatJsonl(file, threadLegacyPath(track, id)); // migrate if legacy
   const now = new Date().toISOString();
   await writeChatLines(
     file,
@@ -1051,8 +1063,8 @@ async function persistThread({ id, track, lesson, selection, question, answer })
   return readThreadData(file);
 }
 
-async function readThreadData(jsonlPath, legacyPath) {
-  const { meta, history } = await readChatJsonl(jsonlPath, legacyPath);
+async function readThreadData(jsonlPath) {
+  const { meta, history } = await readChatJsonl(jsonlPath);
   if (!meta && !history.length) return null;
   return {
     id: meta?.id,
@@ -1091,90 +1103,6 @@ function exercisesDir(track){ return join(trackDir(track), 'exercises'); }
 function exerciseDir(track, name) { return join(exercisesDir(track), name); }
 function trackThreadsDir(track) { return join(trackDir(track), 'threads'); }
 
-// ---------- one-time migration: flat layout → per-track ----------
-async function migrateLayoutIfNeeded() {
-  const sg = STUDYGROUND_DIR;
-  const oldLessons = join(sg, 'lessons');
-  const oldExercises = join(sg, 'exercises');
-  const oldThreads = join(sg, '.studyground', 'threads');
-
-  // Build lesson → track and exercise → track maps from the OLD flat layout
-  const lessonToTrack = {};
-  const exerciseToTrack = {};
-  let migratedSomething = false;
-
-  let oldLessonFiles = [];
-  try { oldLessonFiles = await readdir(oldLessons); } catch {}
-
-  for (const f of oldLessonFiles) {
-    if (!f.endsWith('.md')) continue;
-    const slug = f.replace(/\.md$/, '');
-    let content;
-    try { content = await readFile(join(oldLessons, f), 'utf8'); } catch { continue; }
-    const fm = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fm) continue;
-    const tm = fm[1].match(/^track:\s*(.+)$/m);
-    const track = tm ? tm[1].trim() : null;
-    if (!track) continue;
-    lessonToTrack[slug] = track;
-    for (const m of content.matchAll(/^:::exercise\s+(\S+)/gm)) {
-      exerciseToTrack[m[1]] = track;
-    }
-    const dest = lessonPath(track, slug);
-    if (!existsSync(dest)) {
-      await mkdir(dirname(dest), { recursive: true });
-      await rename(join(oldLessons, f), dest);
-      migratedSomething = true;
-    }
-  }
-
-  // Move exercises into their owning track
-  let oldExFiles = [];
-  try { oldExFiles = await readdir(oldExercises); } catch {}
-  for (const name of oldExFiles) {
-    if (name.startsWith('.')) continue;
-    const track = exerciseToTrack[name];
-    if (!track) continue;
-    const src = join(oldExercises, name);
-    const dest = exerciseDir(track, name);
-    if (!existsSync(dest)) {
-      await mkdir(dirname(dest), { recursive: true });
-      try { await rename(src, dest); migratedSomething = true; } catch {}
-    }
-  }
-
-  // Move threads into their owning track (looked up by thread.lesson → that lesson's track)
-  let oldThreadFiles = [];
-  try { oldThreadFiles = await readdir(oldThreads); } catch {}
-  for (const f of oldThreadFiles) {
-    if (!f.endsWith('.json')) continue;
-    let data;
-    try { data = JSON.parse(await readFile(join(oldThreads, f), 'utf8')); } catch { continue; }
-    const track = lessonToTrack[data?.lesson];
-    if (!track) continue;
-    const dest = join(trackThreadsDir(track), f);
-    if (!existsSync(dest)) {
-      await mkdir(dirname(dest), { recursive: true });
-      try { await rename(join(oldThreads, f), dest); migratedSomething = true; } catch {}
-    }
-  }
-
-  if (migratedSomething) {
-    console.log('[migrate] moved flat lessons/exercises/threads into tracks/<slug>/*');
-  }
-
-  // Clean up leftover empty flat dirs (and dirs that contain only .gitkeep).
-  // Use recursive: true since fs.rm on dirs needs it.
-  for (const dir of [oldLessons, oldExercises, oldThreads]) {
-    try {
-      const remaining = await readdir(dir);
-      const onlyGitkeep = remaining.length === 1 && remaining[0] === '.gitkeep';
-      if (remaining.length === 0 || onlyGitkeep) {
-        await rm(dir, { recursive: true, force: true });
-      }
-    } catch {}
-  }
-}
 
 // ---------- tracks ----------
 async function ensureTrackDir(slug) {
@@ -1226,8 +1154,7 @@ async function listLessonsInTrack(track, { withSummary = false } = {}) {
 }
 
 // Find a thread file across all tracks (used when client doesn't know track).
-// Returns { path, track, legacy } — `path` is always the .jsonl path that
-// reads should use; `legacy` is the .json path (only set if migration needed).
+// Returns { path, track } where `path` is the .jsonl file.
 async function findThreadFile(id) {
   const tracksRoot = join(STUDYGROUND_DIR, 'tracks');
   const subs = await readdir(tracksRoot, { withFileTypes: true }).catch(() => []);
@@ -1235,8 +1162,6 @@ async function findThreadFile(id) {
     if (!s.isDirectory()) continue;
     const jsonl = join(trackThreadsDir(s.name), `${id}.jsonl`);
     if (existsSync(jsonl)) return { path: jsonl, track: s.name };
-    const legacy = join(trackThreadsDir(s.name), `${id}.json`);
-    if (existsSync(legacy)) return { path: jsonl, legacy, track: s.name };
   }
   return null;
 }
@@ -1368,9 +1293,8 @@ async function listThreads({ track, lesson } = {}) {
   for (const t of targetTracks) {
     const dir = trackThreadsDir(t);
     const files = await readdir(dir).catch(() => []);
-    const seen = new Set();
-    const readOne = async (jsonlPath, legacyPath) => {
-      const data = await readThreadData(jsonlPath, legacyPath);
+    const readOne = async (jsonlPath) => {
+      const data = await readThreadData(jsonlPath);
       if (!data) return;
       if (lesson && data.lesson !== lesson) return;
       out.push({
@@ -1387,15 +1311,7 @@ async function listThreads({ track, lesson } = {}) {
     };
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
-      const id = f.slice(0, -'.jsonl'.length);
       await readOne(join(dir, f));
-      seen.add(id);
-    }
-    for (const f of files) {
-      if (!f.endsWith('.json') || f.endsWith('.jsonl')) continue;
-      const id = f.slice(0, -'.json'.length);
-      if (seen.has(id)) continue;
-      await readOne(join(dir, `${id}.jsonl`), join(dir, f));
     }
   }
   out.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
@@ -1465,9 +1381,6 @@ writeFileSync(
     2,
   ),
 );
-
-// Run idempotent boot migration BEFORE starting watcher (so watches go on new dirs)
-await migrateLayoutIfNeeded().catch((e) => console.warn('[migrate] failed:', e?.message));
 
 // Wire materials orchestrator events into the SSE channel so the web UI can
 // reflect extraction progress in real time.

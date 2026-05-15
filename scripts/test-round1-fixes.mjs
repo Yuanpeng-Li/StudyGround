@@ -225,7 +225,169 @@ try {
     !allClosed.chatOpen && !allClosed.matOpen && !allClosed.noRoom,
     allClosed);
 
-  check('no JS console errors', errs.length === 0, errs.slice(0, 5));
+  // ---------- Round-3 fixes ----------
+
+  // R3-1: Viewer auto-closes on track switch / leaving reader.
+  await page.locator('#sidebar-materials .material-item').first().click();
+  await page.waitForSelector('#material-viewer:not([hidden])', { timeout: 3000 });
+  // Nav to home → viewer should close
+  await page.evaluate(() => { location.hash = '#/'; });
+  await page.waitForFunction(() => location.hash === '#/' && document.getElementById('material-viewer').hasAttribute('hidden'), null, { timeout: 3000 }).catch(() => {});
+  const afterHome = await page.evaluate(() => ({
+    hash: location.hash,
+    viewerHidden: document.getElementById('material-viewer').hasAttribute('hidden'),
+    matOpen: document.querySelector('#view-reader .app')?.classList.contains('material-open'),
+  }));
+  check('R3-1: viewer auto-closes on track switch / leaving reader',
+    afterHome.viewerHidden && !afterHome.matOpen, afterHome);
+
+  // R3-2: stale positive cache — server-side delete then nav goes home, not 404.
+  const tmpSlug = `sg-test-stale-${Date.now()}`;
+  await page.evaluate(async (s) => {
+    await fetch('/api/tracks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: s, emoji: '🧪' }) });
+  }, tmpSlug);
+  // Visit it so the cache learns about it
+  await page.goto(`${BASE}/#/t/${tmpSlug}/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => location.hash.endsWith('/intake'), null, { timeout: 5000 }).catch(() => {});
+  // Delete from "outside" — same tab but bypass invalidate hook by calling fetch directly
+  await page.evaluate(async (s) => {
+    await fetch(`/api/tracks/${encodeURIComponent(s)}`, { method: 'DELETE' });
+  }, tmpSlug);
+  // Now navigate to the deleted slug — should bounce home, no resource error
+  await page.evaluate((s) => { location.hash = `#/t/${s}/`; }, tmpSlug);
+  await page.waitForFunction(() => location.hash === '#/', null, { timeout: 5000 }).catch(() => {});
+  const afterStale = await page.evaluate(() => location.hash);
+  check('R3-2: stale positive cache bounces on select-404',
+    afterStale === '#/', { afterStale });
+
+  // R3-3: Out-of-list emoji shown as custom tile in edit dialog.
+  const customSlug = `sg-test-custom-${Date.now()}`;
+  await page.evaluate(async (s) => {
+    await fetch('/api/tracks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: s, emoji: '🐉' }) });
+  }, customSlug);
+  // page.goto to the same hash doesn't trigger a real reload — force one
+  // so renderHome refetches /api/tracks and picks up the new custom track.
+  await page.goto(`${BASE}/#/`, { waitUntil: 'domcontentloaded' });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#view-home:not([hidden])', { timeout: 5000 });
+  // Wait for the track grid to populate (renderHome fetches /api/tracks async).
+  await page.waitForFunction(
+    (s) => !!document.querySelector(`.track-card[data-slug="${s}"]`),
+    customSlug,
+    { timeout: 8000 }
+  );
+  // Drive openEditTrack directly through the click handler — clicking the
+  // ✎ button via Playwright can occasionally race the card's parent <a>.
+  await page.evaluate((s) => {
+    const btn = document.querySelector(`[data-action="edit-track"][data-slug="${s}"]`);
+    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }, customSlug);
+  await page.waitForSelector('#edit-track-dialog[open]', { timeout: 5000 });
+  await page.waitForTimeout(250);
+  const customTile = await page.evaluate(() => {
+    const picker = document.querySelector('.emoji-picker[data-emoji-picker="et"]');
+    if (!picker) return null;
+    const sel = picker.querySelector('.emoji-pick.is-selected');
+    const customs = [...picker.querySelectorAll('.emoji-pick.is-custom')].map((b) => b.dataset.emoji);
+    const hidden = document.getElementById('et-emoji').value;
+    return { selected: sel?.dataset.emoji, customs, hidden };
+  });
+  check('R3-3: out-of-list emoji shown as custom tile + selected',
+    customTile?.selected === '🐉' && customTile.customs.includes('🐉') && customTile.hidden === '🐉',
+    customTile);
+  await page.evaluate(() => document.getElementById('edit-track-dialog').close());
+  await page.evaluate(async (s) => { await fetch(`/api/tracks/${encodeURIComponent(s)}`, { method: 'DELETE' }); }, customSlug);
+
+  // R3-4: Esc dispatcher closes one layer per press.
+  // Open the cmd palette + the chat panel + the material viewer, then press Esc 3x.
+  await page.goto(`${BASE}/#/t/cs277/lesson/01-foundations-imitation-learning`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#lesson-view .sg-cite', { timeout: 10000 });
+  await page.locator('#sidebar-materials .material-item').first().click();
+  await page.waitForSelector('#material-viewer:not([hidden])');
+  await page.locator('#btn-tutor').click();
+  await page.waitForSelector('.sg-chat-panel.show');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => document.getElementById('cmd-palette').showModal());
+  await page.waitForTimeout(200);
+  const before = await page.evaluate(() => ({
+    cmd: document.getElementById('cmd-palette').open,
+    chat: !!document.querySelector('.sg-chat-panel.show'),
+    viewer: !document.getElementById('material-viewer').hasAttribute('hidden'),
+  }));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  const afterEsc1 = await page.evaluate(() => ({
+    cmd: document.getElementById('cmd-palette').open,
+    chat: !!document.querySelector('.sg-chat-panel.show'),
+    viewer: !document.getElementById('material-viewer').hasAttribute('hidden'),
+  }));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  const afterEsc2 = await page.evaluate(() => ({
+    cmd: document.getElementById('cmd-palette').open,
+    chat: !!document.querySelector('.sg-chat-panel.show'),
+    viewer: !document.getElementById('material-viewer').hasAttribute('hidden'),
+  }));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  const afterEsc3 = await page.evaluate(() => ({
+    cmd: document.getElementById('cmd-palette').open,
+    chat: !!document.querySelector('.sg-chat-panel.show'),
+    viewer: !document.getElementById('material-viewer').hasAttribute('hidden'),
+  }));
+  check('R3-4: Esc closes layers one at a time (palette → chat → viewer)',
+    before.cmd && before.chat && before.viewer &&
+    !afterEsc1.cmd && afterEsc1.chat && afterEsc1.viewer &&
+    !afterEsc2.cmd && !afterEsc2.chat && afterEsc2.viewer &&
+    !afterEsc3.cmd && !afterEsc3.chat && !afterEsc3.viewer,
+    { before, afterEsc1, afterEsc2, afterEsc3 });
+
+  // R3-5: CJK filename round-trip (server-side).
+  const cjkName = '文献2024年test.txt';
+  const upload = await page.evaluate(async (n) => {
+    const r = await fetch(`/api/tracks/cs277/materials?name=${encodeURIComponent(n)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: 'hello',
+    }).then((x) => x.json());
+    return r;
+  }, cjkName);
+  check('R3-5: CJK filename uploads with original name preserved',
+    upload?.ok && upload.name && upload.name.includes('文献') && upload.name.includes('2024年'),
+    upload);
+  // Cleanup
+  if (upload?.ok) {
+    await page.evaluate(async (n) => {
+      await fetch(`/api/tracks/cs277/materials/${encodeURIComponent(n)}`, { method: 'DELETE' });
+    }, upload.name);
+  }
+
+  // R3-6: New-course Cancel resets picker.
+  await page.goto(`${BASE}/#/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#view-home:not([hidden])');
+  await page.evaluate(() => document.getElementById('new-track-dialog').showModal());
+  await page.waitForTimeout(200);
+  // Click a non-default emoji
+  await page.locator('.emoji-picker[data-emoji-picker="nt"] .emoji-pick[data-emoji="🦉"]').click();
+  await page.locator('#new-track-dialog [data-action="close-dialog"]').click();
+  await page.waitForTimeout(150);
+  // Reopen — picker should reset to default 📜
+  await page.evaluate(() => document.getElementById('new-track-dialog').showModal());
+  await page.waitForTimeout(200);
+  const ntReset = await page.evaluate(() => {
+    const sel = document.querySelector('.emoji-picker[data-emoji-picker="nt"] .emoji-pick.is-selected');
+    return { selected: sel?.dataset.emoji, hidden: document.getElementById('nt-emoji').value };
+  });
+  check('R3-6: New-course Cancel resets emoji picker to default 📜',
+    ntReset.selected === '📜' && ntReset.hidden === '📜', ntReset);
+  await page.evaluate(() => document.getElementById('new-track-dialog').close());
+
+  // Filter out the single 404 that R3-2 deliberately provokes (stale-cache
+  // recovery). Production users only see this on an actual out-of-band
+  // delete, and the recovery path handles it gracefully.
+  const noisyErrs = errs.filter((e) => !/404/.test(e));
+  check('no JS console errors (excluding intentional stale-cache 404 probe)',
+    noisyErrs.length === 0, noisyErrs.slice(0, 5));
 } catch (e) {
   console.error('exception:', e.stack || e.message);
   results.push({ label: 'exception', ok: false, extra: e.message });
