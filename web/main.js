@@ -3262,15 +3262,17 @@ const newTrackForm = document.getElementById('new-track-form');
 const editTrackDialog = document.getElementById('edit-track-dialog');
 const editTrackForm = document.getElementById('edit-track-form');
 
-// Curated cover emoji set. Loose-themed (book → science → math → code →
-// arts → world → life). Order matters: defaults to the first one (📘).
+// Curated cover emoji set, biased toward the warm-paper / scholarly
+// palette of this theme (cream + terracotta + Source Serif). Avoids
+// rainbow textbook covers, kid-cartoon sci icons, and modern tech
+// glyphs that clash with the parchment vibe. Order is intentional:
+// row 1 writing, row 2 time + classical, row 3 celestial + autumn,
+// row 4 nature + quiet objects. Default is the first item (📜).
 const COVER_EMOJIS = [
-  '📘', '📗', '📙', '📕', '📓', '📒',
-  '🧠', '🧪', '🔬', '🧬', '🪐', '🚀',
-  '📐', '🧮', '💻', '⌨️',
-  '🎨', '🎵', '🎬', '📷',
-  '🌍', '📜', '🏛️', '⚖️',
-  '💰', '📈', '⚙️', '🌱',
+  '📜', '📖', '📔', '📓', '🪶', '🖋️', '✒️', '🕯️',
+  '⏳', '🗝️', '🧭', '🗺️', '🔭', '🏛️', '🏺', '⛰️',
+  '☀️', '🌙', '🪐', '✨', '🌾', '🍂', '🍁', '🍄',
+  '🪴', '☕', '🫖', '🎼', '🦉', '🦌', '🦋', '🪵',
 ];
 
 function renderEmojiPicker(pickerEl, hiddenInput) {
@@ -3710,7 +3712,7 @@ function trackCardHtml(t) {
       <button class="track-export" data-action="export-track" data-slug="${escapeHtml(t.slug)}" title="download course as .tgz" aria-label="export">⬇</button>
       <button class="track-delete" data-action="delete-track" data-slug="${escapeHtml(t.slug)}" title="delete course" aria-label="delete">×</button>
     </span>
-    <span class="track-emoji">${escapeHtml(t.emoji || '📘')}</span>
+    <span class="track-emoji">${escapeHtml(t.emoji || COVER_EMOJIS[0])}</span>
     <span class="track-title">${escapeHtml(t.title || t.slug)}</span>
     <span class="track-desc">${hasDesc ? escapeHtml(t.description) : '<i style="opacity:0.55">no description</i>'}</span>
     <span class="track-meta">${escapeHtml(meta)}</span>
@@ -3811,7 +3813,7 @@ newTrackForm.addEventListener('submit', async (ev) => {
     invalidateTrackSlugCache();
     newTrackDialog.close();
     newTrackForm.reset();
-    setEmojiPickerValue(_ntPicker, document.getElementById('nt-emoji'), '📘');
+    setEmojiPickerValue(_ntPicker, document.getElementById('nt-emoji'), COVER_EMOJIS[0]);
     // Land in intake for new tracks
     location.hash = `#/t/${encodeURIComponent(r.track.slug)}/intake`;
   } catch (e) {
@@ -3826,7 +3828,7 @@ async function openEditTrack(slug) {
     if (!r.ok) throw new Error(r.error || 'not found');
     const t = r.track;
     editTrackForm.dataset.slug = slug;
-    setEmojiPickerValue(_etPicker, document.getElementById('et-emoji'), t.emoji || '📘');
+    setEmojiPickerValue(_etPicker, document.getElementById('et-emoji'), t.emoji || COVER_EMOJIS[0]);
     document.getElementById('et-title').value = t.title || '';
     document.getElementById('et-desc').value = t.description || '';
     document.getElementById('et-slug-hint').textContent =
@@ -3850,7 +3852,7 @@ editTrackForm.addEventListener('submit', async (ev) => {
       body: JSON.stringify({
         title: (fd.get('title') || '').toString().trim(),
         description: (fd.get('description') || '').toString().trim(),
-        emoji: (fd.get('emoji') || '').toString().trim() || '📘',
+        emoji: (fd.get('emoji') || '').toString().trim() || COVER_EMOJIS[0],
       }),
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'update failed');
@@ -3909,7 +3911,7 @@ async function buildCmdItems(query) {
         items.push({
           label,
           hint: `${t.lesson_count}L · ${t.material_count}M`,
-          icon: t.emoji || '📘',
+          icon: t.emoji || COVER_EMOJIS[0],
           run: () => (location.hash = `#/t/${encodeURIComponent(t.slug)}/`),
           group: 'courses',
         });

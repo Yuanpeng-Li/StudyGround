@@ -132,7 +132,7 @@ async function handle(req, res) {
       slug,
       title: body?.title || slug,
       description: body?.description || '',
-      emoji: body?.emoji || '📘',
+      emoji: body?.emoji || '📜',
       created_at: now,
       updated_at: now,
     };
@@ -1265,7 +1265,7 @@ async function listTracks() {
         slug,
         title: slug.replace(/-/g, ' '),
         description: '',
-        emoji: '📘',
+        emoji: '📜',
         created_at: info?.started_at || new Date().toISOString(),
         updated_at: info?.started_at || new Date().toISOString(),
       };
