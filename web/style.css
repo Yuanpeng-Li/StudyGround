@@ -1036,39 +1036,57 @@ a.sidebar-brand:hover { color: var(--accent-deep); }
   font-style: italic;
 }
 .sidebar-materials .material-item {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.6rem;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  column-gap: 0.5rem;
+  row-gap: 0.1rem;
+  padding: 0.35rem 0.55rem;
   border-radius: 6px;
-  font-size: 0.82rem;
   color: var(--text);
 }
 .sidebar-materials .material-item:hover {
   background: var(--bg-sunken);
 }
+.sidebar-materials .material-dot {
+  /* Pin the status dot to the first text-line height so the filename
+     reads as a clean two-line group beside it. */
+  margin-top: 0.45em;
+}
 .sidebar-materials .material-name {
-  flex: 1;
+  /* Filename is the primary information — let it span up to two lines
+     before truncating, so common slugs like "CS277L18.pdf" stay legible
+     even in a narrow sidebar. */
+  grid-column: 2;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  word-break: break-all;
 }
 .sidebar-materials .material-size {
+  /* Stats sit BELOW the filename, not next to it — same column, faint. */
+  grid-column: 2;
   font-family: var(--font-mono);
   font-size: 0.68rem;
   color: var(--text-faint);
+  letter-spacing: 0.01em;
 }
 .sidebar-materials .material-del {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
   background: transparent;
   border: none;
   color: var(--text-faint);
   cursor: pointer;
   font-size: 1rem;
   line-height: 1;
-  padding: 0 0.3rem;
+  padding: 0 0.25rem;
   opacity: 0;
   transition: opacity 100ms ease;
 }
@@ -1123,12 +1141,18 @@ a.sidebar-brand:hover { color: var(--accent-deep); }
 }
 ul.sidebar-lessons,
 ul.sidebar-outline,
-ul.sidebar-threads {
+ul.sidebar-threads,
+ul.sidebar-materials {
   list-style: none;
   padding: 0;
   margin: 0;
   display: flex;
   flex-direction: column;
+}
+ul.sidebar-materials > li {
+  /* Default <li> markers leak through on the materials list because the
+     parent only got `list-style: none` above — pin once more to be safe. */
+  list-style: none;
 }
 
 .thread-li {
