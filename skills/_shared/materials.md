@@ -37,6 +37,11 @@ tracks/<track>/
    by a snippet. Use it like a citation index. Pass `--format json` if you
    want to parse it programmatically.
 
+   **Batch your queries.** One broad `sg-search "transformer attention KV
+   cache training inference"` is much cheaper than five narrow ones —
+   each `Bash` call burns a turn. You typically have **≤16 turns total**
+   for an intake/tutor reply, so plan for 2-4 `sg-search` calls, not 10.
+
 3. **Zoom in.** When `sg-search` points you at `[paper.pdf, p.12]`, open
 
    ```

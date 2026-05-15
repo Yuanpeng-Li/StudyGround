@@ -261,7 +261,9 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
     '--output-format', 'stream-json',
     '--include-partial-messages',
     '--verbose',
-    '--max-turns', mode === 'edit' ? '14' : '10',
+    // Tutor often queries materials before replying — give it room for
+    // multiple sg-searches + a per-file Read or two.
+    '--max-turns', mode === 'edit' ? '20' : '16',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
@@ -373,7 +375,10 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
     '--output-format', 'stream-json',
     '--include-partial-messages',
     '--verbose',
-    '--max-turns', body.action === 'finalize' ? '12' : '8',
+    // Intake often needs to scan an INDEX.md, fire a few `sg-search`
+    // queries across multiple materials, and reply. 8 turns ran out
+    // when a learner uploaded a full course of slide decks. Bump.
+    '--max-turns', body.action === 'finalize' ? '24' : '16',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
@@ -490,8 +495,10 @@ export function spawnClaudeBtwAskStream({ studygroundDir, pluginRoot, body, onDe
     'stream-json',
     '--include-partial-messages',
     '--verbose',
+    // btw side-chat — a question + a few materials lookups + reply.
+    // 6 turns was tight when the question pulled in multiple sources.
     '--max-turns',
-    '6',
+    '12',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
