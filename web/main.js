@@ -857,9 +857,29 @@ async function loadMaterials(track, listEl, emptyText) {
     listEl.innerHTML = mats
       .map((m) => {
         const sizeKb = m.size < 1024 ? `${m.size}B` : `${(m.size / 1024).toFixed(1)}K`;
-        return `<li><div class="material-item">
-          <span class="material-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</span>
-          <span class="material-size">${sizeKb}</span>
+        const status = m.status || 'pending';
+        // status drives the dot color in CSS; stats line is human-readable.
+        const statsBits = [];
+        if (m.pages && m.pages > 1) statsBits.push(`${m.pages}pp`);
+        if (m.approx_tokens) {
+          statsBits.push(m.approx_tokens >= 1000
+            ? `~${(m.approx_tokens / 1000).toFixed(m.approx_tokens >= 10000 ? 0 : 1)}k tok`
+            : `~${m.approx_tokens} tok`);
+        }
+        const stats = statsBits.length ? statsBits.join(' · ') : sizeKb;
+        const tooltip = [
+          m.name,
+          `Size: ${sizeKb}`,
+          m.pages ? `Pages: ${m.pages}` : null,
+          m.approx_tokens ? `≈ ${m.approx_tokens} tokens` : null,
+          m.chunks ? `Chunks: ${m.chunks}` : null,
+          `Status: ${status}`,
+          m.indexed_at ? `Indexed: ${new Date(m.indexed_at).toLocaleString()}` : null,
+        ].filter(Boolean).join('\n');
+        return `<li><div class="material-item" data-status="${escapeHtml(status)}">
+          <span class="material-dot" title="${escapeHtml(status)}"></span>
+          <span class="material-name" title="${escapeHtml(tooltip)}">${escapeHtml(m.name)}</span>
+          <span class="material-size">${escapeHtml(stats)}</span>
           <button class="material-del" data-action="delete-material" data-name="${escapeHtml(m.name)}" data-track="${escapeHtml(track)}" title="delete" aria-label="delete">×</button>
         </div></li>`;
       })
@@ -2802,6 +2822,34 @@ es.addEventListener('message', (ev) => {
   }
   if (data.type === 'progress-change') {
     loadList();
+  }
+  // Materials pipeline events — refresh whichever materials list is visible
+  // for the affected track. Cheap: the list re-fetch is small and
+  // server-side stats already include the new status.
+  if (data.type === 'material_indexed' || data.type === 'material_failed' || data.type === 'material_deleted') {
+    if (data.slug === currentTrack) {
+      loadMaterials();
+    }
+    if (data.slug === intakeTrack) {
+      const il = document.getElementById('intake-materials-list');
+      if (il) loadMaterials(intakeTrack, il, 'drop in PDFs / notes / cheatsheets — your tutor will see them');
+    }
+    if (data.type === 'material_failed') {
+      setStatus(`extraction failed: ${data.name} — ${data.error || 'unknown error'}`);
+    } else if (data.type === 'material_indexed') {
+      const tag = data.status && data.status !== 'ok' ? ` (${data.status})` : '';
+      setStatus(`indexed: ${data.name}${tag}`);
+    }
+  }
+  if (data.type === 'material_progress' && data.phase) {
+    // Surface long-running phases (extract / vectors) without spamming.
+    if (data.phase === 'extract' && data.of) {
+      setStatus(`extracting ${data.name}: page ${data.page}/${data.of}`);
+    } else if (data.phase === 'vectors' && data.done && data.of) {
+      setStatus(`embedding ${data.name}: ${data.done}/${data.of}`);
+    } else if (data.phase === 'bm25' || data.phase === 'mirror' || data.phase === 'chunk') {
+      setStatus(`${data.phase}: ${data.name}`);
+    }
   }
 });
 

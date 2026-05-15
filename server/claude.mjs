@@ -1,11 +1,24 @@
 import { spawn } from 'node:child_process';
 
+// One-paragraph materials primer reused across prompts. Keeps the rest of the
+// prompts short while making sure every skill knows about the new on-disk
+// retrieval layer (text mirror + sg-search + INDEX.md).
+const MATERIALS_PRIMER = `Working with course materials (when this track has any):
+- Read tracks/<track>/materials/INDEX.md first — it lists every file with page count, approx token count, and status.
+- For content lookups across materials, run Bash(sg-search "<query>" --track <track> --k 8). It returns top chunks with [filename, p.N] citations.
+- To dig further, Read tracks/<track>/materials/.text/<file>.md (page-anchored markdown mirror) at the matching "## p. N" header, or Grep it.
+- Fallback when a file's status is image-pdf, pending, failed, or unsupported: Read(tracks/<track>/materials/<file>.pdf, pages: "X-Y") — Claude's native vision handles up to 20 pages per call.
+- Cite EVERY material-grounded claim as [<filename>, p.<N>]. No bare "as the paper says".
+See skills/_shared/materials.md for the full reference.`;
+
 function buildNextPrompt({ studygroundDir, topic, track }) {
   const trackHint = track ? `The current_track is "${track}". ` : '';
   return topic
     ? `You are working inside ${studygroundDir}.
 
 ${trackHint}Use the studyground "learn" skill to start a new learning track on: "${topic}".
+
+${MATERIALS_PRIMER}
 
 Write exactly one new lesson file under tracks/<current_track>/lessons/ following the
 lesson-format spec in the skill's _shared/ docs. Update progress.json. Then exit.`
@@ -18,6 +31,8 @@ with a sensible default topic ("transformers from scratch"). Otherwise use the
 If tracks/<current_track>/curriculum.md exists, treat it as the authoritative plan —
 the next lesson should be whatever's next in that plan, grounded in any
 tracks/<current_track>/materials/ that exist.
+
+${MATERIALS_PRIMER}
 
 Write exactly one new lesson file under tracks/<current_track>/lessons/ following the
 lesson-format spec in the skill's _shared/ docs. Update progress.json. Then exit.`;
@@ -42,7 +57,7 @@ export function spawnClaudeNextStream({ studygroundDir, pluginRoot, body, onDelt
     '--permission-mode',
     'acceptEdits',
     '--allowed-tools',
-    'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *)',
+    'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *),Bash(sg-search *)',
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format',
     'stream-json',
@@ -212,6 +227,8 @@ Use the studyground "tutor" skill. The current track is "${track}". Read its
 curriculum, lessons listing, materials, threads, and progress.json shallowly
 to ground your reply.
 
+${MATERIALS_PRIMER}
+
 ${editLine}
 
 ${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}User's current message:
@@ -225,8 +242,8 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
   }
   const mode = body.mode === 'edit' ? 'edit' : 'read';
   const allowedTools = mode === 'edit'
-    ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *)'
-    : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *)';
+    ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)'
+    : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)';
   const args = [
     '-p',
     buildTutorPrompt({
@@ -327,6 +344,8 @@ unless you're proposing to plan.`;
 Use the studyground "intake" skill. The current track is "${track}"; metadata at
 tracks/${track}/track.json, any uploaded materials at tracks/${track}/materials/.
 
+${MATERIALS_PRIMER}
+
 ${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}${userMessage ? `User just said:\n${userMessage}\n\n` : ''}${finalizeBlock}`;
 }
 
@@ -348,8 +367,8 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
     '--add-dir', studygroundDir,
     '--permission-mode', 'acceptEdits',
     '--allowed-tools', body.action === 'finalize'
-      ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *)'
-      : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *)',
+      ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)'
+      : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)',
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format', 'stream-json',
     '--include-partial-messages',
@@ -445,7 +464,7 @@ export async function spawnClaudeBtwAsk({ studygroundDir, pluginRoot, body }) {
     prompt: buildBtwAskPrompt(body),
     pluginRoot,
     studygroundDir,
-    allowedTools: 'Read,Glob,Grep',
+    allowedTools: 'Read,Glob,Grep,Bash(sg-search *)',
     maxTurns: '4',
   });
 }
@@ -465,7 +484,7 @@ export function spawnClaudeBtwAskStream({ studygroundDir, pluginRoot, body, onDe
     '--permission-mode',
     'acceptEdits',
     '--allowed-tools',
-    'Read,Glob,Grep,Bash(ls *),Bash(cat *)',
+    'Read,Glob,Grep,Bash(ls *),Bash(cat *),Bash(sg-search *)',
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format',
     'stream-json',
@@ -532,7 +551,7 @@ function runClaude({ prompt, pluginRoot, studygroundDir, allowedTools, maxTurns 
       '--permission-mode',
       'acceptEdits',
       '--allowed-tools',
-      allowedTools || 'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *)',
+      allowedTools || 'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *),Bash(sg-search *)',
       '--disallowed-tools', 'AskUserQuestion',
       '--output-format',
       'json',

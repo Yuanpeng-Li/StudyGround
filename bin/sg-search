@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+'use strict';
+// sg-search — search a track's materials (BM25 + optional vectors).
+//
+// Usage:
+//   sg-search "query string" --track <slug> [--k 10] [--budget-tokens 6000]
+//                            [--format text|json] [--alpha 0.4] [--no-vectors]
+//
+// Output (text mode):
+//   [file.pdf, p.12]  bm25=8.74 cos=0.81 score=0.79
+//   ─────────────────
+//   ...snippet...
+//
+// Stateless: reads pre-built indices from $STUDYGROUND_DIR/tracks/<slug>/.studyground-index/.
+// Designed to be invoked from a Claude turn (allowed-tool: Bash(sg-search *)).
+// Exits 2 with a friendly message when the index isn't ready (so Claude can
+// fall back to native Read on the original file).
+
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+
+function getStudygroundDir() {
+  const raw =
+    process.env.CLAUDE_PLUGIN_OPTION_STUDYGROUND_DIR ||
+    process.env.STUDYGROUND_DIR ||
+    '~/studyground';
+  return raw.startsWith('~') ? path.join(os.homedir(), raw.slice(1)) : path.resolve(raw);
+}
+
+function parseArgs(argv) {
+  const out = { positional: [], k: 10, budgetTokens: 6000, format: 'text', alpha: 0.4, noVectors: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--track') out.track = argv[++i];
+    else if (a === '--k') out.k = Number(argv[++i]);
+    else if (a === '--budget-tokens') out.budgetTokens = Number(argv[++i]);
+    else if (a === '--format') out.format = argv[++i];
+    else if (a === '--alpha') out.alpha = Number(argv[++i]);
+    else if (a === '--no-vectors') out.noVectors = true;
+    else if (a === '-h' || a === '--help') { out.help = true; }
+    else out.positional.push(a);
+  }
+  return out;
+}
+
+function printHelp() {
+  console.log(`sg-search — search a track's materials.
+
+Usage:
+  sg-search "query string" --track <slug> [options]
+
+Options:
+  --k N               Top-K matches to return (default 10)
+  --budget-tokens N   Stop adding chunks past this approx-token total (default 6000)
+  --format text|json  Output format (default text)
+  --alpha α          Hybrid weight: α·BM25 + (1−α)·cosine (default 0.4)
+  --no-vectors        BM25 only even if vectors are available
+  -h, --help          This help
+`);
+}
+
+function normalize(arr) {
+  if (!arr.length) return arr;
+  const vals = arr.map((x) => x.score);
+  const mn = Math.min(...vals);
+  const mx = Math.max(...vals);
+  if (mx === mn) return arr.map((x) => Object.assign({}, x, { score: 1 }));
+  return arr.map((x) => Object.assign({}, x, { score: (x.score - mn) / (mx - mn) }));
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help || args.positional.length === 0) {
+    printHelp();
+    process.exit(args.help ? 0 : 2);
+  }
+  if (!args.track) {
+    console.error('sg-search: --track is required');
+    process.exit(2);
+  }
+  const query = args.positional.join(' ');
+  const dir = getStudygroundDir();
+  const indexDir = path.join(dir, 'tracks', args.track, '.studyground-index');
+  const bm25Path = path.join(indexDir, 'bm25.json');
+  const vectorsPath = path.join(indexDir, 'vectors.jsonl');
+
+  if (!fs.existsSync(bm25Path)) {
+    console.error(
+      `sg-search: no index for track "${args.track}". ` +
+      `Upload materials first, or run reindex (POST /api/tracks/${args.track}/reindex).`,
+    );
+    process.exit(2);
+  }
+
+  // Dynamic imports — the materials/ modules are .mjs and the script lives in
+  // a "type: commonjs" package, so we must import them lazily.
+  const bm25Mod = await import(path.join(PLUGIN_ROOT, 'server/materials/bm25.mjs'));
+  const vectorsMod = await import(path.join(PLUGIN_ROOT, 'server/materials/vectors.mjs'));
+  const statsMod = await import(path.join(PLUGIN_ROOT, 'server/material-stats.mjs'));
+  const { search: searchBm25 } = bm25Mod;
+
+  let bm25Index;
+  try {
+    bm25Index = JSON.parse(fs.readFileSync(bm25Path, 'utf8'));
+  } catch (e) {
+    console.error(`sg-search: failed to read bm25 index: ${e.message}`);
+    process.exit(2);
+  }
+  const fetchK = Math.max(args.k * 2, 20);
+  const bm25Hits = searchBm25(bm25Index, query, fetchK);
+  if (!bm25Hits.length) {
+    if (args.format === 'json') {
+      process.stdout.write(JSON.stringify({ ok: true, hits: [] }, null, 2) + '\n');
+    } else {
+      console.log(`No matches for: ${query}`);
+    }
+    return;
+  }
+
+  let vectorHits = [];
+  if (!args.noVectors && vectorsMod.vectorsEnabled() && fs.existsSync(vectorsPath)) {
+    try {
+      vectorHits = await vectorsMod.search(vectorsPath, query, fetchK);
+    } catch (e) {
+      console.error(`(sg-search: vector search failed: ${e.message}; falling back to bm25)`);
+      vectorHits = [];
+    }
+  }
+
+  const normBm25 = normalize(bm25Hits.map((h) => ({ id: h.id, score: h.bm25, hit: h })));
+  const normVec = normalize(vectorHits.map((h) => ({ id: h.id, score: h.cos, cos: h.cos })));
+  const merged = new Map();
+  for (const h of normBm25) {
+    merged.set(h.id, { id: h.id, bm25: h.score, cos: 0, hit: h.hit });
+  }
+  for (const v of normVec) {
+    const cur = merged.get(v.id) || { id: v.id, bm25: 0, cos: 0, hit: null };
+    cur.cos = v.score;
+    merged.set(v.id, cur);
+  }
+  const useVec = normVec.length > 0;
+  const ranked = [...merged.values()].map((m) => Object.assign({}, m, {
+    score: useVec ? (args.alpha * m.bm25 + (1 - args.alpha) * m.cos) : m.bm25,
+  }));
+  ranked.sort((a, b) => b.score - a.score);
+
+  const hitById = {};
+  for (const h of bm25Hits) hitById[h.id] = h;
+  const enriched = ranked.map((r) => {
+    const h = r.hit || hitById[r.id] || { id: r.id };
+    return {
+      id: r.id,
+      source: h.source,
+      page_start: h.page_start,
+      page_end: h.page_end,
+      score: r.score,
+      bm25: r.bm25,
+      cos: useVec ? r.cos : null,
+      approx_token_count: h.approx_token_count,
+      text: h.text,
+      snippet: h.snippet,
+    };
+  });
+
+  const final = [];
+  let usedTokens = 0;
+  for (const e of enriched) {
+    const cost = e.approx_token_count || statsMod.estimateTokens(e.text || '');
+    if (final.length > 0 && usedTokens + cost > args.budgetTokens) break;
+    final.push(e);
+    usedTokens += cost;
+    if (final.length >= args.k) break;
+  }
+
+  if (args.format === 'json') {
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      track: args.track,
+      query,
+      hits: final,
+      used_tokens: usedTokens,
+      vectors_used: useVec,
+    }, null, 2) + '\n');
+    return;
+  }
+
+  for (const h of final) {
+    const pageRef = h.page_start === h.page_end ? `p.${h.page_start}` : `p.${h.page_start}-${h.page_end}`;
+    const cosPart = useVec ? `  cos=${(h.cos == null ? 0 : h.cos).toFixed(2)}` : '';
+    console.log(`[${h.source}, ${pageRef}]  bm25=${(h.bm25 == null ? 0 : h.bm25).toFixed(2)}${cosPart}  score=${(h.score == null ? 0 : h.score).toFixed(2)}`);
+    console.log('─'.repeat(50));
+    console.log(h.snippet || h.text || '');
+    console.log('');
+  }
+  console.log(`(${final.length} chunk${final.length === 1 ? '' : 's'}, ~${usedTokens} tokens. Use --format json for structured output.)`);
+}
+
+main().catch((e) => {
+  console.error('sg-search:', e && e.message ? e.message : e);
+  process.exit(1);
+});

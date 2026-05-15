@@ -37,11 +37,15 @@ Code writes the lessons; you drive the pace.
 Requires Node ≥ 20 and the `claude` CLI on `PATH`.
 
 ```bash
-# Run the local web reader directly (no plugin install needed):
-./bin/studyground serve
-#   → http://localhost:4321
+git clone <this-repo> studyground
+cd studyground
+./bin/studyground setup        # installs deps, scaffolds ~/studyground, runs doctor
+./bin/studyground serve        # → http://localhost:4321
+```
 
-# Or enable as a Claude Code plugin (point CC at this repo):
+Or enable as a Claude Code plugin (point CC at this repo):
+
+```bash
 claude --plugin-dir /path/to/studyground
 ```
 
@@ -49,13 +53,52 @@ From the home view, click **+ New course** (or **Import a course**), talk
 to the tutor for a bit, then hit **Plan curriculum →**. After that,
 **Next →** generates each lesson.
 
+## Materials (NotebookLM-style RAG)
+
+Drop PDFs / papers / notes / scanned images into a course's `materials/`
+folder (via the sidebar **+** button, the intake screen, or directly into
+`~/studyground/tracks/<slug>/materials/`). StudyGround processes them
+asynchronously:
+
+- **PDF text** is extracted with `pdfjs-dist` and saved as a page-anchored
+  markdown mirror at `materials/.text/<file>.md` (`## p. N` headers per
+  page) — Claude can `Grep` and `Read` this with its existing tools.
+- **Images** (PNG / JPG / TIFF / …) are OCR'd with bundled `tesseract.js`
+  (English by default — set `STUDYGROUND_TESS_LANGS=eng+chi_sim` for multi-lang).
+- **Image-only PDFs** are flagged `image-pdf`; Claude falls back to its
+  native PDF `Read(file, pages:)` (which has vision) — no manual OCR needed.
+- **Stats** — pages, ≈ tokens, char count, chunk count — show up on the
+  sidebar chips and the auto-generated `materials/INDEX.md`.
+- **Search** with `bin/sg-search "query" --track <slug>` returns top
+  chunks ranked by BM25 (and embeddings when an API key is set), with
+  `[file, p.N]` citations. Skills (intake / tutor / next / learn) are
+  wired to use it.
+- **Incremental** — re-uploading the same file is a sha256-keyed no-op;
+  deleting cleans up all derived artefacts. Drop a file in via VSCode and
+  the server reconciles on its next boot (or via "Re-index" in the UI).
+
+**Optional vector embeddings.** Set one of these env vars before `serve`
+and StudyGround will build cosine-rankable embeddings alongside BM25,
+combining them via `α·bm25 + (1−α)·cosine`:
+
+```bash
+export VOYAGE_API_KEY=...    # voyage-3-large
+# or
+export OPENAI_API_KEY=...    # text-embedding-3-small
+```
+
+Without either key, BM25 + the text mirror covers the common cases just
+fine — no external services involved.
+
 ## CLI
 
 ```text
+studyground setup          One-shot: npm install, scaffold, doctor
 studyground init           Scaffold the studyground directory (~/studyground)
-studyground serve          Start the local web reader
+studyground serve          Start the local web reader (auto-runs setup if needed)
 studyground open [lesson]  Open the reader in your default browser
-studyground doctor         Check environment (claude on PATH, node, WSL, …)
+studyground doctor         Check environment (claude, node, deps, vector key, per-track index health)
+sg-search "<query>" --track <slug>   Search a track's materials (BM25 + optional vectors)
 ```
 
 ## Skills (Claude Code entry points)
@@ -89,14 +132,17 @@ Everything lives under `$STUDYGROUND_DIR` (default `~/studyground`):
 ```
 tracks/
   <slug>/
-    track.json          title, description, emoji, timestamps
-    curriculum.md       the plan (written by intake)
-    lessons/            generated lesson .md files
-    materials/          user-uploaded PDFs / notes / cheatsheets
-    threads/            saved side-chat JSON files
-    exercises/          scaffolded exercise folders
-memory/CLAUDE.md        cross-session learner profile
-progress.json           current track + per-track lesson cursor
+    track.json            title, description, emoji, timestamps
+    curriculum.md         the plan (written by intake)
+    lessons/              generated lesson .md files
+    materials/            user-uploaded PDFs / notes / cheatsheets / images
+      INDEX.md            auto-generated listing with stats + status
+      .text/<file>.md     page-anchored markdown mirrors (Grep this!)
+    .studyground-index/   manifest.json, chunks.jsonl, bm25.json, [vectors.jsonl]
+    threads/              saved side-chat JSON files
+    exercises/            scaffolded exercise folders
+memory/CLAUDE.md          cross-session learner profile
+progress.json             current track + per-track lesson cursor
 ```
 
 Files are the source of truth — point a different editor at the same
@@ -128,10 +174,18 @@ directory and you'll see the same state.
 Set via env vars, or via the `userConfig` block in
 [`.claude-plugin/plugin.json`](.claude-plugin/plugin.json) when used as a CC plugin:
 
-| Variable             | Default          | Meaning                          |
-| -------------------- | ---------------- | -------------------------------- |
-| `STUDYGROUND_DIR`    | `~/studyground`  | Where courses & state live       |
-| `STUDYGROUND_PORT`   | `4321`           | Local web reader port            |
+| Variable                          | Default            | Meaning                                          |
+| --------------------------------- | ------------------ | ------------------------------------------------ |
+| `STUDYGROUND_DIR`                 | `~/studyground`    | Where courses & state live                       |
+| `STUDYGROUND_PORT`                | `4321`             | Local web reader port                            |
+| `STUDYGROUND_CHUNK_CHARS`         | `1200`             | Chars per RAG chunk                              |
+| `STUDYGROUND_CHUNK_OVERLAP`       | `200`              | Char overlap between chunks                      |
+| `STUDYGROUND_TESS_LANGS`          | `eng`              | Tesseract languages, e.g. `eng+chi_sim`          |
+| `STUDYGROUND_EMBEDDINGS_PROVIDER` | `auto`             | `auto` / `voyage` / `openai` / `off`             |
+| `STUDYGROUND_VOYAGE_MODEL`        | `voyage-3-large`   | Voyage model when provider=voyage                |
+| `STUDYGROUND_OPENAI_MODEL`        | `text-embedding-3-small` | OpenAI model when provider=openai          |
+| `VOYAGE_API_KEY`                  | _(unset)_          | Activates Voyage embeddings                      |
+| `OPENAI_API_KEY`                  | _(unset)_          | Activates OpenAI embeddings (used when no Voyage)|
 
 ## License
 

@@ -26,14 +26,15 @@ function getPort() {
 
 const [, , cmd, ...args] = process.argv;
 
-const handlers = { init: cmdInit, serve: cmdServe, doctor: cmdDoctor, open: cmdOpen };
+const handlers = { init: cmdInit, setup: cmdSetup, serve: cmdServe, doctor: cmdDoctor, open: cmdOpen };
 
 if (!cmd || !handlers[cmd]) {
   console.log(`studyground — local web reader + Claude Code as tutor
 
 Usage:
+  studyground setup          One-shot: install deps, scaffold dir, run doctor
   studyground init           Scaffold the studyground directory
-  studyground serve          Start the local web reader
+  studyground serve          Start the local web reader (auto-runs setup if needed)
   studyground doctor         Check environment
   studyground open [lesson]  Open the reader in your default browser
 `);
@@ -54,9 +55,55 @@ async function cmdInit(args) {
   if (!quiet) console.log(`✓ studyground initialized at ${dir}`);
 }
 
+async function cmdSetup(args) {
+  const quiet = args && args.includes('--quiet');
+  // 1. Install npm deps if missing.
+  const nodeModules = path.join(PLUGIN_ROOT, 'node_modules');
+  const needsInstall = !fs.existsSync(path.join(nodeModules, 'pdfjs-dist')) ||
+    !fs.existsSync(path.join(nodeModules, 'tesseract.js'));
+  if (needsInstall) {
+    if (!quiet) console.log('· installing dependencies (pdfjs-dist, tesseract.js)…');
+    await runNpmInstall();
+  } else if (!quiet) {
+    console.log('✓ dependencies present');
+  }
+  // 2. Scaffold $STUDYGROUND_DIR.
+  await cmdInit(quiet ? ['--quiet'] : []);
+  // 3. Doctor.
+  if (!quiet) console.log('');
+  await cmdDoctor();
+  if (!quiet) {
+    console.log('');
+    console.log('Ready. Next:');
+    console.log('  studyground serve     # opens the local web reader');
+  }
+}
+
+function runNpmInstall() {
+  return new Promise((resolve, reject) => {
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const child = spawn(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      cwd: PLUGIN_ROOT,
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`npm install exited ${code}`));
+    });
+    child.on('error', reject);
+  });
+}
+
 async function cmdServe() {
   const dir = getStudygroundDir();
   const port = getPort();
+  // Auto-setup on first run: if node_modules is missing, install deps.
+  const nodeModules = path.join(PLUGIN_ROOT, 'node_modules');
+  if (!fs.existsSync(path.join(nodeModules, 'pdfjs-dist'))) {
+    console.log('· first run — installing dependencies…');
+    try { await runNpmInstall(); }
+    catch (e) { console.warn('  (npm install failed: ' + e.message + ') — continuing; some materials features may be disabled'); }
+  }
   if (!fs.existsSync(dir)) await cmdInit(['--quiet']);
   const serverEntry = path.join(PLUGIN_ROOT, 'server/index.mjs');
   const child = spawn(process.execPath, [serverEntry], {
@@ -85,9 +132,38 @@ async function cmdDoctor() {
   checks.push([`studyground dir writable (${dir})`, canWrite(dir)]);
   const env = isWSL() ? 'WSL (vscode:// uses vscode-remote scheme)' : process.platform;
   checks.push(['environment', env]);
+  checks.push(['pdfjs-dist installed', fs.existsSync(path.join(PLUGIN_ROOT, 'node_modules/pdfjs-dist'))]);
+  checks.push(['tesseract.js installed', fs.existsSync(path.join(PLUGIN_ROOT, 'node_modules/tesseract.js'))]);
+  const provider = process.env.VOYAGE_API_KEY ? 'voyage' : (process.env.OPENAI_API_KEY ? 'openai' : 'off');
+  checks.push(['vector embeddings', provider]);
+  // Materials index health: per track, count materials w/ stale vs ok status.
+  try {
+    const tracksRoot = path.join(dir, 'tracks');
+    if (fs.existsSync(tracksRoot)) {
+      const slugs = fs.readdirSync(tracksRoot, { withFileTypes: true })
+        .filter((d) => d.isDirectory()).map((d) => d.name);
+      for (const slug of slugs) {
+        const mDir = path.join(tracksRoot, slug, 'materials');
+        if (!fs.existsSync(mDir)) continue;
+        const files = fs.readdirSync(mDir).filter((f) => !f.startsWith('.') && f !== 'INDEX.md');
+        if (!files.length) continue;
+        const manifestPath = path.join(tracksRoot, slug, '.studyground-index/manifest.json');
+        let okCount = 0;
+        if (fs.existsSync(manifestPath)) {
+          try {
+            const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            for (const f of files) {
+              if (m.materials?.[f]?.status === 'ok') okCount++;
+            }
+          } catch {}
+        }
+        checks.push([`track "${slug}" materials`, `${okCount}/${files.length} indexed`]);
+      }
+    }
+  } catch {}
   for (const [name, val] of checks) {
-    const ok = val === true || (typeof val === 'string' && val.length > 0);
-    console.log(`${ok ? '✓' : '✗'} ${name}: ${val}`);
+    const ok = val === true || (typeof val === 'string' && val.length > 0 && val !== 'off');
+    console.log(`${ok ? '✓' : '·'} ${name}: ${val}`);
   }
 }
 

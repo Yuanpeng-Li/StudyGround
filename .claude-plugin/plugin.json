@@ -18,6 +18,30 @@
       "title": "Local web port",
       "description": "Port for the local reader UI.",
       "default": 4321
+    },
+    "chunk_chars": {
+      "type": "number",
+      "title": "Chunk size (chars)",
+      "description": "Approximate character count per RAG chunk when processing uploaded materials.",
+      "default": 1200
+    },
+    "chunk_overlap": {
+      "type": "number",
+      "title": "Chunk overlap (chars)",
+      "description": "Characters of overlap between adjacent chunks.",
+      "default": 200
+    },
+    "embeddings_provider": {
+      "type": "string",
+      "title": "Embeddings provider",
+      "description": "Vector embedding backend: 'auto' uses whichever API key is set (VOYAGE_API_KEY > OPENAI_API_KEY); 'off' disables vectors.",
+      "default": "auto"
+    },
+    "hybrid_alpha": {
+      "type": "number",
+      "title": "Hybrid retrieval α",
+      "description": "Weight for BM25 in hybrid scoring: score = α·bm25 + (1−α)·cosine (default 0.4).",
+      "default": 0.4
     }
   }
 }
