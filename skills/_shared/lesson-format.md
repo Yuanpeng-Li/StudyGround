@@ -150,6 +150,34 @@ for this block and creates exercises/<name>/ if missing.
 - ` ```python` — read-only code, syntax-highlighted only
 - ` ```python run` — in-browser executable (Pyodide, M4+). For now renders with a "run" badge.
 
+### Tables — always use pipe syntax, never space-aligned text in a fence
+
+For any tabular data, write a real markdown table:
+
+```markdown
+|                  | Provided correct output | Provided feedback |
+| ---------------- | ----------------------- | ----------------- |
+| Teacher selects  | IL from demonstrations  | Offline RL        |
+| Learner selects  | IL from corrections     | RL                |
+```
+
+The reader styles tables (header underline, row separators, hover wash,
+inline-code chips, horizontal scroll wrapper).
+
+❌ Don't do this — it renders as preformatted code, not a table:
+
+````markdown
+```
+                 Provided correct output      Provided feedback
+Teacher selects  IL from demonstrations       Offline RL
+Learner selects  IL from corrections          RL
+```
+````
+
+If you can't fit a row into a single line (very wide content), still
+use pipe syntax — let the cell wrap, or move the data into a list of
+labelled bullets. Never reach for a code fence for layout.
+
 ## Style rules
 
 - Lead each section with the punchline, then justify

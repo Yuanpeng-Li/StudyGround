@@ -845,12 +845,32 @@ async function handle(req, res) {
     return;
   }
   try {
-    const s = await stat(file).catch(() => null);
-    if (!s || s.isDirectory()) file = join(root, 'index.html');
+    let s = await stat(file).catch(() => null);
+    if (!s || s.isDirectory()) {
+      file = join(root, 'index.html');
+      s = await stat(file).catch(() => null);
+    }
     const data = await readFile(file);
-    res.writeHead(200, {
+    // Dev server: tell the browser to revalidate every request. Without
+    // this the user edits style.css / main.js, refreshes, and still sees
+    // the cached old version. `no-cache` (≠ `no-store`) lets the
+    // browser keep the response in its cache but forces it to ask us
+    // first; we send a tiny mtime-keyed ETag and respond 304 when it's
+    // unchanged so refreshes stay cheap.
+    const etag = s
+      ? `W/"${s.size.toString(16)}-${Math.floor(s.mtimeMs).toString(16)}"`
+      : `W/"${data.length.toString(16)}"`;
+    const headers = {
       'Content-Type': MIME[extname(file)] || 'application/octet-stream',
-    });
+      'Cache-Control': 'no-cache',
+      'ETag': etag,
+    };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     res.writeHead(404).end();
