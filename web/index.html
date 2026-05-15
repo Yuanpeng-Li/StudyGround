@@ -202,8 +202,9 @@
       <form id="new-track-form">
         <h3>New course</h3>
         <div class="dlg-row">
-          <label for="nt-emoji">Cover</label>
-          <input id="nt-emoji" name="emoji" maxlength="4" value="📘" autocomplete="off" />
+          <label>Cover</label>
+          <div class="emoji-picker" data-emoji-picker="nt"></div>
+          <input type="hidden" id="nt-emoji" name="emoji" value="📘" />
         </div>
         <div class="dlg-row">
           <label for="nt-title">Title</label>
@@ -225,8 +226,9 @@
       <form id="edit-track-form">
         <h3>Edit course</h3>
         <div class="dlg-row">
-          <label for="et-emoji">Cover</label>
-          <input id="et-emoji" name="emoji" maxlength="4" autocomplete="off" />
+          <label>Cover</label>
+          <div class="emoji-picker" data-emoji-picker="et"></div>
+          <input type="hidden" id="et-emoji" name="emoji" value="📘" />
         </div>
         <div class="dlg-row">
           <label for="et-title">Title</label>

@@ -671,6 +671,43 @@ dialog.sg-dialog h3 {
   gap: 0.5rem;
   margin-top: 0.4rem;
 }
+/* Emoji cover picker — pick from a curated grid instead of typing. */
+.emoji-picker {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 0.25rem;
+}
+.emoji-pick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  width: 100%;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 90ms ease, border-color 90ms ease, transform 90ms ease;
+}
+.emoji-pick:hover {
+  background: var(--bg-soft);
+  border-color: var(--border);
+}
+.emoji-pick:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-faint);
+}
+.emoji-pick.is-selected {
+  background: var(--accent-faint);
+  border-color: var(--accent);
+}
+@media (max-width: 520px) {
+  .emoji-picker { grid-template-columns: repeat(6, 1fr); }
+}
 .dlg-hint {
   margin: 0 0 0.7rem;
   font-family: var(--font-mono);

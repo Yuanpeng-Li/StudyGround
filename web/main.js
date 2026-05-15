@@ -3262,6 +3262,47 @@ const newTrackForm = document.getElementById('new-track-form');
 const editTrackDialog = document.getElementById('edit-track-dialog');
 const editTrackForm = document.getElementById('edit-track-form');
 
+// Curated cover emoji set. Loose-themed (book → science → math → code →
+// arts → world → life). Order matters: defaults to the first one (📘).
+const COVER_EMOJIS = [
+  '📘', '📗', '📙', '📕', '📓', '📒',
+  '🧠', '🧪', '🔬', '🧬', '🪐', '🚀',
+  '📐', '🧮', '💻', '⌨️',
+  '🎨', '🎵', '🎬', '📷',
+  '🌍', '📜', '🏛️', '⚖️',
+  '💰', '📈', '⚙️', '🌱',
+];
+
+function renderEmojiPicker(pickerEl, hiddenInput) {
+  if (!pickerEl || !hiddenInput) return;
+  const current = hiddenInput.value || COVER_EMOJIS[0];
+  pickerEl.innerHTML = COVER_EMOJIS.map((e) =>
+    `<button type="button" class="emoji-pick${e === current ? ' is-selected' : ''}" data-emoji="${escapeHtml(e)}" aria-label="${escapeHtml(e)}" title="${escapeHtml(e)}">${escapeHtml(e)}</button>`
+  ).join('');
+}
+function setEmojiPickerValue(pickerEl, hiddenInput, value) {
+  if (!pickerEl || !hiddenInput) return;
+  const v = COVER_EMOJIS.includes(value) ? value : COVER_EMOJIS[0];
+  hiddenInput.value = v;
+  for (const b of pickerEl.querySelectorAll('.emoji-pick')) {
+    b.classList.toggle('is-selected', b.dataset.emoji === v);
+  }
+}
+// Init once; click-delegate updates the hidden input.
+const _ntPicker = document.querySelector('.emoji-picker[data-emoji-picker="nt"]');
+const _etPicker = document.querySelector('.emoji-picker[data-emoji-picker="et"]');
+renderEmojiPicker(_ntPicker, document.getElementById('nt-emoji'));
+renderEmojiPicker(_etPicker, document.getElementById('et-emoji'));
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.emoji-pick');
+  if (!btn) return;
+  ev.preventDefault();
+  const picker = btn.closest('.emoji-picker');
+  const which = picker?.dataset.emojiPicker;
+  const hidden = which === 'et' ? document.getElementById('et-emoji') : document.getElementById('nt-emoji');
+  setEmojiPickerValue(picker, hidden, btn.dataset.emoji);
+});
+
 function parseRoute() {
   const hash = location.hash || '#/';
   // #/t/<slug>/intake → intake
@@ -3770,7 +3811,7 @@ newTrackForm.addEventListener('submit', async (ev) => {
     invalidateTrackSlugCache();
     newTrackDialog.close();
     newTrackForm.reset();
-    document.getElementById('nt-emoji').value = '📘';
+    setEmojiPickerValue(_ntPicker, document.getElementById('nt-emoji'), '📘');
     // Land in intake for new tracks
     location.hash = `#/t/${encodeURIComponent(r.track.slug)}/intake`;
   } catch (e) {
@@ -3785,7 +3826,7 @@ async function openEditTrack(slug) {
     if (!r.ok) throw new Error(r.error || 'not found');
     const t = r.track;
     editTrackForm.dataset.slug = slug;
-    document.getElementById('et-emoji').value = t.emoji || '📘';
+    setEmojiPickerValue(_etPicker, document.getElementById('et-emoji'), t.emoji || '📘');
     document.getElementById('et-title').value = t.title || '';
     document.getElementById('et-desc').value = t.description || '';
     document.getElementById('et-slug-hint').textContent =
