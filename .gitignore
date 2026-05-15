@@ -5,6 +5,7 @@ dist/
 web/dist/
 .studyground-cache/
 scripts/.shots/
+.playwright-mcp/
 .claude/*
 !.claude/agents/
 !.claude/commands/

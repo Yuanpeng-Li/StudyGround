@@ -206,7 +206,7 @@
               <button id="outline-toggle" class="outline-toggle" type="button" aria-label="Toggle outline" aria-expanded="false" title="show outline">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="0.8" fill="currentColor"/><circle cx="4" cy="12" r="0.8" fill="currentColor"/><circle cx="4" cy="18" r="0.8" fill="currentColor"/></svg>
               </button>
-              <button id="btn-back-to-plan" data-action="back-to-plan" title="Back to plan / curriculum view">📋 Plan</button>
+              <button id="btn-back-to-plan" data-action="back-to-plan" title="Open the plan view (curriculum + tutor chat + materials)">📋 Plan</button>
               <button id="btn-recap" title="Fold answered Q&A in this lesson">Recap</button>
               <button id="btn-next">Next →</button>
             </div>
@@ -309,6 +309,16 @@
           <button type="submit" class="primary">Save</button>
         </div>
       </form>
+    </dialog>
+
+    <!-- Confirm dialog (shared, driven by sgConfirm() in main.js) -->
+    <dialog id="confirm-dialog" class="sg-dialog">
+      <h3 id="confirm-title">Confirm</h3>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="dlg-actions">
+        <button type="button" id="confirm-cancel">Cancel</button>
+        <button type="button" id="confirm-ok" class="primary danger">Delete</button>
+      </div>
     </dialog>
 
     <script type="module" src="/main.js"></script>

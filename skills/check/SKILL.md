@@ -22,7 +22,7 @@ You are called by `/api/check`. The request gives:
    - Correctness vs the goal
    - Common gotchas (shape errors, off-by-one, missing edge cases)
    - Style nits (only if they obscure intent — don't be pedantic)
-5. Write your review to `exercises/<exercise>/feedback.md`, replacing any existing content. Use markdown. 2–6 paragraphs. Lead with the bottom line ("Looks correct, here's one concern…" or "Close, but the shape is off in the matmul step…").
+5. Write your review to `exercises/<exercise>/feedback.md`, replacing any existing content. Use markdown. 2–6 paragraphs. Lead with the bottom line ("Looks correct, here's one concern…" or "Close, but the shape is off in the matmul step…"). Don't open with "Great work!" / "Excellent job!" or other warm-up boilerplate — write like a code reviewer, not a cheerleader.
 6. Append (or replace if it exists) a feedback block in `lessons/<lesson>.md`, immediately below the matching `:::exercise <exercise>` ... `:::` block. Use this exact format:
 
    ```

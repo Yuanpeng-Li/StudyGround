@@ -409,20 +409,59 @@ export async function reconcile({ studygroundDir, slug, force = false }) {
   // Re-load: processMaterial just wrote N new entries; our local seedManifest
   // is stale. Cleanup uses the fresh on-disk state.
   const manifest = await loadManifest(studygroundDir, slug);
-  // Drop manifest entries for files that no longer exist on disk.
+  // Drop manifest entries for files that no longer exist on disk, AND clean
+  // up the derived artefacts (text mirror, chunks, bm25, vectors). Without
+  // this, an external `rm tracks/<slug>/materials/<file>` would leave an
+  // orphan .text/<file>.md and stale chunks/bm25 around — reconcile would
+  // update only the manifest + INDEX.md, leading to a confusing "indexed
+  // file with no source" state and a broken export tgz.
   const stillOnDisk = new Set(visible);
-  let droppedAny = false;
+  const dropped = [];
   for (const name of Object.keys(manifest.materials)) {
     if (!stillOnDisk.has(name)) {
+      dropped.push(name);
       delete manifest.materials[name];
-      droppedAny = true;
     }
   }
-  if (droppedAny) {
+  // Sweep .text/ for orphan mirror files even if the manifest never tracked
+  // them. Covers the corner where .studyground-index/ was wiped (test scripts,
+  // a stale `rm -rf .studyground-index/`) while a mirror file persists.
+  const mirrorDir = textMirrorDir(studygroundDir, slug);
+  if (existsSync(mirrorDir)) {
+    const mirrors = await readdir(mirrorDir).catch(() => []);
+    for (const m of mirrors) {
+      if (!m.endsWith('.md')) continue;
+      const original = m.replace(/\.md$/, '');
+      if (!stillOnDisk.has(original)) {
+        await unlink(join(mirrorDir, m)).catch(() => {});
+      }
+    }
+  }
+  if (dropped.length) {
+    for (const name of dropped) {
+      await deleteTextMirror({ studygroundDir, slug, name });
+    }
+    // Drop chunks whose source is gone; rebuild bm25 (and vectors if any).
+    const remaining = (await readChunks(studygroundDir, slug)).filter(
+      (c) => stillOnDisk.has(c.source),
+    );
+    await writeChunks(studygroundDir, slug, remaining);
+    const bm25 = buildBm25(remaining);
+    await writeFile(bm25Path(studygroundDir, slug), JSON.stringify(bm25));
+    if (vectorsEnabled() && remaining.length) {
+      try {
+        await buildVectors(remaining, { vectorsPath: vectorsPath(studygroundDir, slug) });
+      } catch (e) {
+        console.warn('[vectors] rebuild after reconcile drop failed:', e?.message);
+      }
+    } else if (existsSync(vectorsPath(studygroundDir, slug))) {
+      await unlink(vectorsPath(studygroundDir, slug)).catch(() => {});
+    }
     await saveManifest(studygroundDir, slug, manifest);
     await regenerateIndexMd(studygroundDir, slug);
+    for (const name of dropped) fire({ type: 'material_deleted', slug, name });
   }
-  return { processed, skipped };
+  return { processed, skipped, dropped };
 }
 
 export async function reconcileAll({ studygroundDir }) {

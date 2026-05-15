@@ -17,10 +17,28 @@ You are called by `/api/ask`. The request gives:
 
 ## Main-thread (`?>`) flow
 
-1. Read `lessons/<slug>.md`
-2. Count `?>` and `?>>` markers from the top; locate the one at `index` and verify it matches `question` and `kind`
-3. Below that marker you will see a line `<!-- answer:pending -->`
-4. Replace **that single line** with:
+Modern lessons are **pre-answered at generation time** — the marker already
+has an `<!-- answer:start --> … <!-- answer:end -->` body sitting under it.
+This endpoint is therefore mostly used in two cases:
+
+- The lesson predates the pre-write rule and still has `<!-- answer:pending -->`.
+- The learner clicked Ask on an already-answered question to ask for a
+  different / deeper take, and the caller is asking you to rewrite the body.
+
+The flow:
+
+1. Read `lessons/<slug>.md`.
+2. Count `?>` and `?>>` markers from the top; locate the one at `index` and
+   verify it matches `question` and `kind`.
+3. Look at what's directly under that marker:
+   - If you see `<!-- answer:pending -->`, replace that single line with the
+     `answer:start` / `answer:end` block in step 4 below.
+   - If you see an existing `<!-- answer:start -->` … `<!-- answer:end -->`
+     block, **replace its body** (the markdown between the start/end
+     comments — keep both comments) with the new answer.
+   - If you see neither, that's an unexpected lesson shape: exit without
+     writing and report the mismatch.
+4. The block has this exact form:
 
    ```
    <!-- answer:start -->
@@ -30,9 +48,10 @@ You are called by `/api/ask`. The request gives:
 
 5. Write the file back and exit.
 
-The answer should read as a natural continuation of the lesson — it WILL be
-rendered inline as part of the main narrative. 1–4 paragraphs. Use math
-(`$...$`, `$$...$$`) and code fences as needed.
+The reader auto-expands a pre-answered `<details>` so the answer reads as a
+natural continuation of the lesson. 1–4 paragraphs. Use math
+(`$...$`, `$$...$$`) and code fences as needed. Don't open with "Great
+question!" or other ChatGPT preamble — write like the lesson author.
 
 ## Btw (`?>>`) flow
 

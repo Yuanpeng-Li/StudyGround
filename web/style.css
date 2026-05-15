@@ -687,6 +687,26 @@ dialog.sg-dialog h3 {
   color: var(--text-faint);
 }
 
+/* Shared confirm dialog body — newlines in the message render as breaks. */
+#confirm-dialog { max-width: 460px; }
+.confirm-message {
+  margin: 0 0 1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+button.primary.danger {
+  background: #c0392b;
+  border-color: #c0392b;
+  color: #fff;
+}
+button.primary.danger:hover:not(:disabled) {
+  background: #a93226;
+  border-color: #a93226;
+}
+
 /* ---------- command palette ---------- */
 dialog.cmd-palette-dialog {
   min-width: 540px;

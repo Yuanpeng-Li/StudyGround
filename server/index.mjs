@@ -54,7 +54,14 @@ const inflightChildren = new Map();
 // Reject empty / over-long / dot-only / control-char segments. `..` is
 // the obvious attack; pure `_` / `-` / `.` strings also fail an
 // alphanumeric-required check.
-const SAFE_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+// Allow any Unicode letter or number plus dot/underscore/hyphen. The blocked
+// set (path separators, control chars, quotes, Windows-reserved, etc.) is
+// covered by the negation: anything NOT a letter/number/./_/- is rejected.
+// This lets users name lessons/threads/exercises with CJK / accented chars
+// so the sidebar entries can actually be opened (was ASCII-only and 400'd).
+// Path traversal is still blocked: `..` and friends are caught by the
+// "all dot-class" filter below; `/` and `\` aren't in the allow-set at all.
+const SAFE_SEGMENT_RE = /^[\p{L}\p{N}._-]+$/u;
 function isSafeSegment(s) {
   if (typeof s !== 'string') return false;
   if (s.length === 0 || s.length > 200) return false;
@@ -438,7 +445,7 @@ async function handle(req, res) {
     // lets the spawned claude finish writing the lesson file + progress.json.
     // Explicit cancellation goes through POST /api/abort.
     req.on('close', () => { clientGone = true; });
-    child = spawnClaudeNextStream({
+    child = await spawnClaudeNextStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
       body,
@@ -666,7 +673,7 @@ async function handle(req, res) {
     let child = null;
     const releaseLock = () => { lessonLocks.delete(tutorLockKey); inflightChildren.delete(tutorLockKey); };
     req.on('close', () => { clientGone = true; });
-    child = spawnClaudeTutorStream({
+    child = await spawnClaudeTutorStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
       body,

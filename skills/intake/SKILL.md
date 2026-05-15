@@ -135,7 +135,15 @@ finalized: {YYYY-MM-DD}
 - (deferred: items the learner mentioned that aren't in scope)
 ```
 
-Aim for **6–10 lessons** unless the learner explicitly asked for fewer/more.
+**Lesson count** — read what the learner actually wants:
+
+- If they asked for "short" / "tight" / "minimal" / a specific number ≤5,
+  honor it. A focused 4-lesson plan is better than a padded 8-lesson one
+  they'll bounce off of. **Do not silently round up to 6.**
+- If they asked for "full" / "deep" / "thorough" / a specific number ≥10,
+  honor that too — extend the arc rather than truncating it.
+- Otherwise aim for **6–10 lessons**.
+
 Scope lines are one short clause, not a paragraph.
 
 Save the file. Don't touch `progress.json`. Don't generate any lesson body

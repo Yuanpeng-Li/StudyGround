@@ -40,3 +40,8 @@ main narrative intact.
 After 4–5 `?>` markers in one lesson have been asked and answered inline, the
 file gets long and the main narrative is harder to skim on a second read. Folding
 collapses the Q&A behind a single line, but keeps it one click away.
+
+Note: in the reader, an answered `?>` is **open by default** (so the learner
+sees the answer they earned). Recap is the explicit "I've already absorbed
+this, now hide it on re-read" action — it overrides the default by rewriting
+the source into a raw `<details>` block.
