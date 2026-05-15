@@ -166,6 +166,18 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
+/* Intake is a fixed-height 3-column layout — each pane handles its own
+   scroll internally. Without clamping the body, an absolutely-positioned
+   popover (e.g. an inline-comment pin) or any child overflowing
+   intake-main can grow the document beyond the viewport and let the
+   whole page scroll vertically, exposing empty space below the layout.
+   Reader + home stay in normal flow (need to scroll for long lessons /
+   many cards), so the clamp is intake-only. */
+body:has(#view-intake:not([hidden])) {
+  height: 100vh;
+  overflow: hidden;
+}
+
 /* When the side chat panel is open, push the whole document inward by the
    panel's current width so the panel no longer overlays main content.
    `--sg-chat-width` is set by the resize handle (defaults to 440px). */
