@@ -1,5 +1,49 @@
 import { spawn } from 'node:child_process';
 
+// ---------- Shared tool sets ----------
+// The Claude CLI takes --allowed-tools as a comma-separated whitelist.
+// Studyground is a single-user local tool — we deliberately err on the
+// permissive side so the tutor / intake / chat surfaces actually feel
+// useful (web search, broader bash for inspection + scratch work).
+// Anything truly destructive (rm, dd, mv, kill, etc.) is NOT whitelisted;
+// the wider `Bash(...)` patterns are read-mostly utilities + scripted
+// runners. Permission mode is `acceptEdits` so file writes don't prompt.
+
+// Read-only inspection commands every spawn can use.
+const BASH_INSPECT = [
+  'Bash(ls *)', 'Bash(cat *)', 'Bash(head *)', 'Bash(tail *)',
+  'Bash(grep *)', 'Bash(wc *)', 'Bash(find *)', 'Bash(file *)',
+  'Bash(stat *)', 'Bash(echo *)', 'Bash(date *)', 'Bash(pwd)',
+  'Bash(sg-search *)',
+];
+// Heavier runners — for skills that legitimately execute user code
+// (check) or that the tutor needs for ad-hoc calculation / scratch work.
+const BASH_RUN = [
+  'Bash(python *)', 'Bash(python3 *)', 'Bash(node *)',
+  'Bash(pytest *)', 'Bash(jq *)',
+];
+const WEB = ['WebSearch', 'WebFetch'];
+
+// Read-only tutor / btw-ask / intake-ask / etc.
+const TOOLS_READ = [
+  'Read', 'Glob', 'Grep', 'Skill', ...BASH_INSPECT, ...WEB,
+].join(',');
+
+// Tutor in edit mode (user opted in) — read + write + heavier bash.
+const TOOLS_TUTOR_EDIT = [
+  'Read', 'Edit', 'Write', 'Glob', 'Grep', 'Skill',
+  ...BASH_INSPECT, ...BASH_RUN, ...WEB,
+].join(',');
+
+// Content-writing skills (next / learn / intake-finalize / ask / recap
+// / save-thread). They write lesson files / curriculum / progress, but
+// generally don't need to execute scratch code or fetch web pages —
+// keep their footprint slightly tighter than the tutor's edit mode.
+const TOOLS_CONTENT_EDIT = [
+  'Read', 'Edit', 'Write', 'Glob', 'Grep', 'Skill', 'Task',
+  ...BASH_INSPECT, ...WEB,
+].join(',');
+
 // One-paragraph materials primer reused across prompts. Keeps the rest of the
 // prompts short while making sure every skill knows about the new on-disk
 // retrieval layer (text mirror + sg-search + INDEX.md).
@@ -57,7 +101,7 @@ export function spawnClaudeNextStream({ studygroundDir, pluginRoot, body, onDelt
     '--permission-mode',
     'acceptEdits',
     '--allowed-tools',
-    'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *),Bash(sg-search *)',
+    TOOLS_CONTENT_EDIT,
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format',
     'stream-json',
@@ -177,9 +221,14 @@ ${runHint}
 Read main.py, give honest feedback, write it to
 tracks/${track}/exercises/${exercise}/feedback.md, and add/replace the feedback block in the
 lesson. Then exit.`;
+  // run_tests mode adds Python / pytest runners on top of the standard
+  // content-edit set; static-review mode uses the shared content set.
   const allowedTools = run_tests
-    ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(python *),Bash(python3 *),Bash(pytest *),Bash(ls *),Bash(cat *)'
-    : undefined;
+    ? [
+        TOOLS_CONTENT_EDIT,
+        'Bash(python *)', 'Bash(python3 *)', 'Bash(pytest *)',
+      ].join(',')
+    : TOOLS_CONTENT_EDIT;
   return runClaude({ prompt, pluginRoot, studygroundDir, allowedTools });
 }
 
@@ -241,9 +290,7 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
     return null;
   }
   const mode = body.mode === 'edit' ? 'edit' : 'read';
-  const allowedTools = mode === 'edit'
-    ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)'
-    : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)';
+  const allowedTools = mode === 'edit' ? TOOLS_TUTOR_EDIT : TOOLS_READ;
   const args = [
     '-p',
     buildTutorPrompt({
@@ -368,9 +415,7 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
     '--plugin-dir', pluginRoot,
     '--add-dir', studygroundDir,
     '--permission-mode', 'acceptEdits',
-    '--allowed-tools', body.action === 'finalize'
-      ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)'
-      : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *),Bash(sg-search *)',
+    '--allowed-tools', body.action === 'finalize' ? TOOLS_CONTENT_EDIT : TOOLS_READ,
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format', 'stream-json',
     '--include-partial-messages',
@@ -469,7 +514,7 @@ export async function spawnClaudeBtwAsk({ studygroundDir, pluginRoot, body }) {
     prompt: buildBtwAskPrompt(body),
     pluginRoot,
     studygroundDir,
-    allowedTools: 'Read,Glob,Grep,Bash(sg-search *)',
+    allowedTools: TOOLS_READ,
     maxTurns: '4',
   });
 }
@@ -488,8 +533,7 @@ export function spawnClaudeBtwAskStream({ studygroundDir, pluginRoot, body, onDe
     studygroundDir,
     '--permission-mode',
     'acceptEdits',
-    '--allowed-tools',
-    'Read,Glob,Grep,Bash(ls *),Bash(cat *),Bash(sg-search *)',
+    '--allowed-tools', TOOLS_READ,
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format',
     'stream-json',
@@ -557,8 +601,7 @@ function runClaude({ prompt, pluginRoot, studygroundDir, allowedTools, maxTurns 
       studygroundDir,
       '--permission-mode',
       'acceptEdits',
-      '--allowed-tools',
-      allowedTools || 'Read,Edit,Write,Glob,Grep,Skill,Task,Bash(ls *),Bash(cat *),Bash(sg-search *)',
+      '--allowed-tools', allowedTools || TOOLS_CONTENT_EDIT,
       '--disallowed-tools', 'AskUserQuestion',
       '--output-format',
       'json',

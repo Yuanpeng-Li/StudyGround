@@ -2823,6 +2823,19 @@ es.addEventListener('message', (ev) => {
   if (data.type === 'progress-change') {
     loadList();
   }
+  // Intake just finalized → the server wrote curriculum.md. If we're
+  // still sitting on the intake view for that track, jump to the reader
+  // (where Next → can start lesson 1) immediately. SSE-driven nav is
+  // more reliable than the post-stream setTimeout that finalize used
+  // to depend on — the stream's `done` event can race with the file
+  // write or fail to arrive at all.
+  if (data.type === 'curriculum-change') {
+    const onIntakeView = location.hash.startsWith(`#/t/${encodeURIComponent(data.track)}/intake`);
+    if (onIntakeView) {
+      setStatus('curriculum saved — opening reader');
+      location.hash = `#/t/${encodeURIComponent(data.track)}/`;
+    }
+  }
   // Materials pipeline events — refresh whichever materials list is visible
   // for the affected track. Cheap: the list re-fetch is small and
   // server-side stats already include the new status.
@@ -3079,7 +3092,15 @@ async function sendIntakeTurn(userMessage, finalize) {
     setStatus(`intake (${(meta?.duration_ms / 1000).toFixed(1)}s, $${meta?.cost_usd?.toFixed(3)})`);
     if (finalize) {
       setStatus('curriculum saved');
-      setTimeout(() => { location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`; }, 1400);
+      // Primary path: SSE `curriculum-change` jumps us to the reader the
+      // moment the file lands on disk. This setTimeout is the belt — if
+      // SSE missed the event (rare; the watcher self-heals stale entries
+      // but startup races can still happen), nav after a short delay.
+      setTimeout(() => {
+        if (location.hash.startsWith(`#/t/${encodeURIComponent(intakeTrack)}/intake`)) {
+          location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`;
+        }
+      }, 2000);
     }
   } catch (e) {
     const aborted = e?.name === 'AbortError';
@@ -3211,7 +3232,7 @@ document.getElementById('intake-messages').addEventListener('click', (ev) => {
   if (msg) editIntakeMsgAndRerun(msg);
 });
 
-// "Plan curriculum →" and "skip intake" buttons
+// "Plan curriculum →" button
 document.addEventListener('click', (ev) => {
   const btn = ev.target.closest('button[data-action]');
   if (!btn) return;
@@ -3220,16 +3241,6 @@ document.addEventListener('click', (ev) => {
     const pendingMsg = document.getElementById('intake-input').value.trim();
     document.getElementById('intake-input').value = '';
     sendIntakeTurn(pendingMsg || null, true);
-  } else if (btn.dataset.action === 'skip-intake') {
-    ev.preventDefault();
-    if (!confirm('Skip the intake? You can come back to it later, but lesson generation will be less personalized.')) return;
-    // Source the slug from the URL, not the global — the global can drift
-    // out of sync if enterIntake hasn't yet run, sending the user into a
-    // *different* track's reader. Going home is also safer than going to
-    // the track's reader, since a track with no curriculum + no lessons
-    // would just redirect back to intake (an infinite loop the user
-    // already said no to).
-    location.hash = '#/';
   }
 });
 
