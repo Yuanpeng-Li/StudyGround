@@ -21,7 +21,7 @@ other skills (learn / next / ask / check / recap / intake / save-thread)
 - `tracks/<current_track>/track.json` — title, description
 - `tracks/<current_track>/curriculum.md` — the plan
 - `tracks/<current_track>/lessons/` — list (don't deep-read unless asked)
-- `tracks/<current_track>/materials/` — list; read with `Read` when the user asks about content. **PDFs are readable natively** — for >10 pages pass `pages: "1-N"` (max 20 per call). Don't try `pdftotext` via Bash.
+- `tracks/<current_track>/materials/INDEX.md` — auto-generated listing with page counts, ≈ token counts, and status per material. **For content lookups, prefer `Bash(sg-search "<query>" --track <current_track>)`** — it returns top chunks with `[file, p.N]` citations. To read more, open `materials/.text/<file>.md` (the page-anchored mirror) and grep / scroll to the right `## p. N`. Native `Read(file.pdf, pages: "1-N")` (≤20pp/call) is the fallback for image-pdf / pending / failed files. Don't try `pdftotext` via Bash. Full reference: `skills/_shared/materials.md`.
 - `tracks/<current_track>/threads/*.json` — past btw threads (signal of what they got stuck on)
 - `progress.json` — completed vs current
 - `memory/CLAUDE.md` — learner profile
@@ -53,7 +53,8 @@ You run in one of two modes — the user controls it via a toggle in the panel
 header. The current turn's prompt will tell you which one is active.
 
 **read-only** (default, safest)
-- Available tools: `Read, Glob, Grep, Skill, Bash(ls *), Bash(cat *)`.
+- Available tools: `Read, Glob, Grep, Skill, Bash(ls *), Bash(cat *),
+  Bash(sg-search *)`.
 - **No Edit / Write.** If the learner asks for a change, describe the diff or
   paste the rewritten snippet and tell them to flip the
   **read-only ↔ can edit** toggle if they want you to write the file directly.

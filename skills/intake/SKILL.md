@@ -53,13 +53,16 @@ hasn't already addressed; skip the ones that are obvious from context:
 5. **Style nudges** — intuition-first, code-first, math-first. Long
    derivations welcome or skip them.
 6. **Materials they've uploaded.** If `tracks/<track>/materials/` has files,
-   glance at the listing; mention them by name. **The `Read` tool reads PDFs
-   natively** — for a small PDF (≤10 pages) just `Read(file)`; for larger
-   PDFs (slide decks, papers) pass `pages: "1-5"` and skim the first few
-   pages so you can speak to the actual content, not just the filename.
-   Then ask whether to ground the course in those or treat them as
-   reference. If empty, ask whether there are papers/repos/books the
-   course should track.
+   start by reading `tracks/<track>/materials/INDEX.md` — that listing
+   shows every file with page count and ≈ token count. For content,
+   prefer `Bash(sg-search "<term>" --track <track>)` over Read-ing whole
+   PDFs (see `skills/_shared/materials.md` for the full retrieval guide).
+   The page-anchored text mirrors live under `materials/.text/<file>.md`.
+   For image-only PDFs (status `image-pdf` in INDEX.md), fall back to
+   native `Read(file.pdf, pages: "1-5")` — Claude's vision will OCR.
+   Mention the materials by name, then ask whether to ground the course
+   in those or treat them as reference. If empty, ask whether there are
+   papers/repos/books the course should track.
 
 A good first turn just opens the door: greet by topic (read
 `tracks/<track>/track.json` for title + description), say one true thing about
@@ -125,10 +128,14 @@ lesson 1, or edit `curriculum.md` if anything's off." Keep it concrete.
 - **Don't use `AskUserQuestion`** or any other interactive-prompt tool —
   this endpoint runs as a single one-shot reply that gets streamed to the
   user. Just write your question in plain text/markdown; the user will type
-  back. The available tools are: Read, Glob, Grep, Bash(ls *), Bash(cat *).
-- **Don't pretend to read PDFs you didn't read.** Use `Glob` to list
-  materials. Read text files (`.md`, `.txt`) shallowly if useful. **PDFs
-  *are* readable** — call `Read(file_path, pages: "1-5")` for big ones
-  (≤20 pages per call). Don't try `pdftotext` / `pdfimages` via Bash;
-  those aren't allowed and aren't installed. Skip true binaries (images,
-  archives, video).
+  back. The available tools are: Read, Glob, Grep, Skill, Bash(ls *),
+  Bash(cat *), Bash(sg-search *). On `action: finalize` you additionally
+  get Edit, Write so you can produce `curriculum.md`.
+- **Don't pretend to read materials you didn't read.** The on-disk RAG
+  layer is your friend: `materials/INDEX.md` for the listing,
+  `Bash(sg-search "<query>" --track <track>)` for ranked chunks across
+  files, `materials/.text/<file>.md` for the page-anchored mirror. For
+  image-pdf / pending / failed files, fall back to native
+  `Read(file_path, pages: "1-5")` (≤20 pages per call). Never shell out
+  to `pdftotext` / `pdfimages` via Bash — not allowed, not installed.
+  See `skills/_shared/materials.md` for the full reference.

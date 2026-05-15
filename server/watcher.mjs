@@ -28,10 +28,22 @@ export function startWatcher(root, emit) {
       if (!s.isDirectory()) continue;
       const slug = s.name;
       const lessonsDir = join(tracksRoot, slug, 'lessons');
-      if (!existsSync(lessonsDir)) continue;
-      watchDir(`lessons:${slug}`, lessonsDir, true, (evType, file) => {
-        if (file && file.endsWith('.md')) {
-          emit({ type: 'lesson-change', track: slug, file: file.replace(/\.md$/, ''), evType });
+      if (existsSync(lessonsDir)) {
+        watchDir(`lessons:${slug}`, lessonsDir, true, (evType, file) => {
+          if (file && file.endsWith('.md')) {
+            emit({ type: 'lesson-change', track: slug, file: file.replace(/\.md$/, ''), evType });
+          }
+        });
+      }
+      // Also watch the track root for `curriculum.md` and `track.json`
+      // appearing / updating — the intake skill writes curriculum.md on
+      // finalize, and without this watch the client would never reload.
+      const trackRoot = join(tracksRoot, slug);
+      watchDir(`track:${slug}`, trackRoot, true, (evType, file) => {
+        if (file === 'curriculum.md') {
+          emit({ type: 'curriculum-change', track: slug, evType });
+        } else if (file === 'track.json') {
+          emit({ type: 'track-change', track: slug, evType });
         }
       });
     }

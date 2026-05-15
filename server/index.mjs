@@ -1,12 +1,20 @@
 import { createServer } from 'node:http';
 import { readFile, stat, readdir, writeFile, mkdir, unlink, rename, rm, appendFile } from 'node:fs/promises';
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { extname, join, resolve, sep, dirname, basename } from 'node:path';
+import { extname, join, resolve, sep, dirname, basename, relative as relPath, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { spawnClaudeNext, spawnClaudeNextStream, spawnClaudeAsk, spawnClaudeCheck, spawnClaudeRecap, spawnClaudeBtwAsk, spawnClaudeBtwAskStream, spawnClaudeSaveThread, spawnClaudeIntakeStream, spawnClaudeTutorStream } from './claude.mjs';
 import { startWatcher } from './watcher.mjs';
 import { scaffoldExercise, vscodeUriFor } from './exercise.mjs';
+import {
+  processMaterial,
+  deleteMaterial,
+  reconcile,
+  reconcileAll,
+  listMaterialsWithStats,
+  onMaterialEvent,
+} from './materials/index.mjs';
 
 const STUDYGROUND_DIR = resolve(process.env.STUDYGROUND_DIR);
 const PORT = Number(process.env.STUDYGROUND_PORT || 4321);
@@ -28,6 +36,43 @@ const MIME = {
 
 const sseClients = new Set();
 const lessonLocks = new Map();
+
+// Single-source path-segment validator. Used everywhere a track slug,
+// thread id, lesson slug, or exercise name lands on disk so a request like
+// `/api/thread/..%2F..%2Fevil` can't reach outside its intended directory.
+// Studyground is a single-user local tool so the exploit risk is near zero,
+// but the bad input still produces confusing crashes — fail fast and clean.
+// Reject empty / over-long / dot-only / control-char segments. `..` is
+// the obvious attack; pure `_` / `-` / `.` strings also fail an
+// alphanumeric-required check.
+const SAFE_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+function isSafeSegment(s) {
+  if (typeof s !== 'string') return false;
+  if (s.length === 0 || s.length > 200) return false;
+  if (!SAFE_SEGMENT_RE.test(s)) return false;
+  if (/^[._-]+$/.test(s)) return false; // ".", "..", "..." all fail this
+  return true;
+}
+function rejectBadSegment(res, label, value) {
+  sendJSON(res, 400, { ok: false, error: `invalid ${label}: ${JSON.stringify(value)}` });
+  return null;
+}
+
+// Cap a chat history before persisting to disk. Tutor + thread JSONL files
+// would otherwise grow without bound (clients can PUT thousands of messages).
+// We keep the most recent entries; oldest get trimmed.
+const CHAT_HISTORY_MAX_MESSAGES = 400;
+const CHAT_HISTORY_MAX_BYTES_PER_MSG = 64 * 1024;
+function capChatHistory(messages) {
+  if (!Array.isArray(messages)) return [];
+  const truncated = messages.map((m) => {
+    const content = String(m.content || '');
+    if (content.length <= CHAT_HISTORY_MAX_BYTES_PER_MSG) return m;
+    return { ...m, content: content.slice(0, CHAT_HISTORY_MAX_BYTES_PER_MSG) + '…[truncated]' };
+  });
+  if (truncated.length <= CHAT_HISTORY_MAX_MESSAGES) return truncated;
+  return truncated.slice(-CHAT_HISTORY_MAX_MESSAGES);
+}
 
 async function handle(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -77,6 +122,7 @@ async function handle(req, res) {
     const rest = path.slice('/api/tracks/'.length);
     const parts = rest.split('/').filter(Boolean).map(decodeURIComponent);
     const trackSlug = parts[0];
+    if (!isSafeSegment(trackSlug)) return rejectBadSegment(res, 'track slug', trackSlug);
     // /api/tracks/<slug>
     if (parts.length === 1) {
       if (req.method === 'GET') {
@@ -146,19 +192,44 @@ async function handle(req, res) {
         if (typeof content === 'string') await writeFile(dest, content, 'utf8');
         else if (Buffer.isBuffer(content)) await writeFile(dest, content);
         else return sendJSON(res, 400, { ok: false, error: 'no content' });
-        return sendJSON(res, 200, { ok: true, name: finalName, renamed: finalName !== safeName });
+        // Respond immediately so the browser doesn't block on extraction.
+        // The materials orchestrator runs async and broadcasts progress via SSE.
+        processMaterial({
+          studygroundDir: STUDYGROUND_DIR,
+          slug: trackSlug,
+          name: finalName,
+          replaceExisting: true,
+        }).catch((e) => console.warn('[materials] process', trackSlug, finalName, ':', e?.message));
+        return sendJSON(res, 200, {
+          ok: true,
+          name: finalName,
+          renamed: finalName !== safeName,
+          status: 'pending',
+        });
       }
+    }
+    // /api/tracks/<slug>/reindex — kick off reconcile for the whole track
+    if (parts.length === 2 && parts[1] === 'reindex' && req.method === 'POST') {
+      reconcile({ studygroundDir: STUDYGROUND_DIR, slug: trackSlug, force: true })
+        .catch((e) => console.warn('[materials] reindex', trackSlug, ':', e?.message));
+      return sendJSON(res, 200, { ok: true, status: 'pending' });
     }
     // /api/tracks/<slug>/materials/<filename>
     if (parts.length === 3 && parts[1] === 'materials') {
-      const file = join(STUDYGROUND_DIR, 'tracks', trackSlug, 'materials', parts[2]);
-      if (!file.startsWith(join(STUDYGROUND_DIR, 'tracks', trackSlug, 'materials') + sep)) {
+      const matName = parts[2];
+      const materialsDir = join(STUDYGROUND_DIR, 'tracks', trackSlug, 'materials');
+      const file = join(materialsDir, matName);
+      // path.relative + `..` check is the only reliable way to detect a
+      // traversal attempt — `startsWith(dir + sep)` can be tricked by
+      // resolved-but-coincidentally-prefixed paths.
+      const rel = relPath(materialsDir, file);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
         return sendJSON(res, 400, { ok: false, error: 'bad path' });
       }
       if (req.method === 'GET') {
         try {
           const data = await readFile(file);
-          const isText = /\.(md|txt|json|js|py|css|html|csv)$/i.test(parts[2]);
+          const isText = /\.(md|txt|json|js|py|css|html|csv)$/i.test(matName);
           res.writeHead(200, {
             'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/octet-stream',
           });
@@ -168,9 +239,20 @@ async function handle(req, res) {
         }
       }
       if (req.method === 'DELETE') {
-        try { await unlink(file); return sendJSON(res, 200, { ok: true }); }
+        try { await unlink(file); }
         catch { return sendJSON(res, 404, { ok: false, error: 'not found' }); }
+        // Clean up derived artefacts (text mirror, manifest entry, chunks, indices).
+        deleteMaterial({ studygroundDir: STUDYGROUND_DIR, slug: trackSlug, name: matName })
+          .catch((e) => console.warn('[materials] delete', trackSlug, matName, ':', e?.message));
+        return sendJSON(res, 200, { ok: true });
       }
+    }
+    // /api/tracks/<slug>/materials/<filename>/stats — manifest details for one file
+    if (parts.length === 4 && parts[1] === 'materials' && parts[3] === 'stats' && req.method === 'GET') {
+      const all = await listMaterialsWithStats({ studygroundDir: STUDYGROUND_DIR, slug: trackSlug });
+      const found = all.find((m) => m.name === parts[2]);
+      if (!found) return sendJSON(res, 404, { ok: false, error: 'not found' });
+      return sendJSON(res, 200, { ok: true, material: found });
     }
   }
 
@@ -205,7 +287,9 @@ async function handle(req, res) {
 
   if (path.startsWith('/api/lesson/')) {
     const slug = decodeURIComponent(path.slice('/api/lesson/'.length));
+    if (!isSafeSegment(slug)) return rejectBadSegment(res, 'lesson slug', slug);
     const trackParam = url.searchParams.get('track');
+    if (trackParam && !isSafeSegment(trackParam)) return rejectBadSegment(res, 'track slug', trackParam);
     let file = null;
     if (trackParam) {
       file = lessonPath(trackParam, slug);
@@ -230,20 +314,25 @@ async function handle(req, res) {
 
   if (path === '/api/next' && req.method === 'POST') {
     const body = await readBody(req);
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
     // If a specific track is requested, set it as current first
     if (body?.track) {
       try { await setCurrentTrack(body.track); } catch {}
     }
+    // Lock per-track so generations on different tracks can run in parallel.
+    // Without `body.track` we fall back to whatever's current — keep the
+    // global key for that case so we still serialize.
+    const nextKey = body?.track ? `next:${body.track}` : 'next';
     if (body?.stream === false) {
-      return await runWithLock('next', res, () =>
+      return await runWithLock(nextKey, res, () =>
         spawnClaudeNext({ studygroundDir: STUDYGROUND_DIR, pluginRoot: PLUGIN_ROOT, body }),
       );
     }
-    if (lessonLocks.has('next')) {
+    if (lessonLocks.has(nextKey)) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: false, error: 'another /next in flight' }));
+      return res.end(JSON.stringify({ ok: false, error: `another ${nextKey} in flight` }));
     }
-    lessonLocks.set('next', true);
+    lessonLocks.set(nextKey, true);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -256,7 +345,7 @@ async function handle(req, res) {
     req.on('close', () => {
       aborted = true;
       try { child?.kill('SIGTERM'); } catch {}
-      lessonLocks.delete('next');
+      lessonLocks.delete(nextKey);
     });
     child = spawnClaudeNextStream({
       studygroundDir: STUDYGROUND_DIR,
@@ -266,11 +355,11 @@ async function handle(req, res) {
       onTool: (ev) => { if (!aborted) write({ type: 'tool', ...ev }); },
       onDone: (meta) => {
         if (!aborted) { write({ type: 'done', ...meta }); res.end(); }
-        lessonLocks.delete('next');
+        lessonLocks.delete(nextKey);
       },
       onError: (e) => {
         if (!aborted) { write({ type: 'error', error: String(e?.message || e) }); res.end(); }
-        lessonLocks.delete('next');
+        lessonLocks.delete(nextKey);
       },
     });
     return;
@@ -278,6 +367,8 @@ async function handle(req, res) {
 
   if (path === '/api/ask' && req.method === 'POST') {
     const body = await readBody(req);
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    if (body?.lesson && !isSafeSegment(body.lesson)) return rejectBadSegment(res, 'lesson slug', body.lesson);
     const key = `ask:${body?.lesson}:${body?.index}`;
     return await runWithLock(key, res, () =>
       spawnClaudeAsk({ studygroundDir: STUDYGROUND_DIR, pluginRoot: PLUGIN_ROOT, body }),
@@ -286,6 +377,9 @@ async function handle(req, res) {
 
   if (path === '/api/exercise/scaffold' && req.method === 'POST') {
     const body = await readBody(req);
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    if (body?.lesson && !isSafeSegment(body.lesson)) return rejectBadSegment(res, 'lesson slug', body.lesson);
+    if (body?.name && !isSafeSegment(body.name)) return rejectBadSegment(res, 'exercise name', body.name);
     try {
       const result = await scaffoldExercise({
         studygroundDir: STUDYGROUND_DIR,
@@ -302,7 +396,12 @@ async function handle(req, res) {
 
   if (path === '/api/check' && req.method === 'POST') {
     const body = await readBody(req);
-    const key = `check:${body?.exercise}`;
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    if (body?.lesson && !isSafeSegment(body.lesson)) return rejectBadSegment(res, 'lesson slug', body.lesson);
+    if (body?.exercise && !isSafeSegment(body.exercise)) return rejectBadSegment(res, 'exercise name', body.exercise);
+    // Scope by both track + lesson + exercise so a check on a different
+    // exercise (even with the same name in another lesson) runs in parallel.
+    const key = `check:${body?.track}:${body?.lesson}:${body?.exercise}`;
     return await runWithLock(key, res, () =>
       spawnClaudeCheck({ studygroundDir: STUDYGROUND_DIR, pluginRoot: PLUGIN_ROOT, body }),
     );
@@ -310,7 +409,9 @@ async function handle(req, res) {
 
   if (path === '/api/recap' && req.method === 'POST') {
     const body = await readBody(req);
-    const key = `recap:${body?.lesson}`;
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    if (body?.lesson && !isSafeSegment(body.lesson)) return rejectBadSegment(res, 'lesson slug', body.lesson);
+    const key = `recap:${body?.track}:${body?.lesson}`;
     return await runWithLock(key, res, () =>
       spawnClaudeRecap({ studygroundDir: STUDYGROUND_DIR, pluginRoot: PLUGIN_ROOT, body }),
     );
@@ -318,6 +419,9 @@ async function handle(req, res) {
 
   if (path === '/api/btw-ask' && req.method === 'POST') {
     const body = await readBody(req);
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    if (body?.lesson && !isSafeSegment(body.lesson)) return rejectBadSegment(res, 'lesson slug', body.lesson);
+    if (body?.thread_id && !isSafeSegment(body.thread_id)) return rejectBadSegment(res, 'thread id', body.thread_id);
     // Stream by default; client can pass {stream:false} for legacy single-shot
     if (body?.stream === false) {
       try {
@@ -388,6 +492,7 @@ async function handle(req, res) {
   // GET /api/tutor/<track> — fetch persisted chat history
   if (path.startsWith('/api/tutor/') && req.method === 'GET') {
     const trackSlug = decodeURIComponent(path.slice('/api/tutor/'.length));
+    if (!isSafeSegment(trackSlug)) return rejectBadSegment(res, 'track slug', trackSlug);
     const data = await loadTutorChat(trackSlug);
     return sendJSON(res, 200, { ok: true, ...data });
   }
@@ -396,30 +501,39 @@ async function handle(req, res) {
   // edit-message-and-truncate UI). Body: { history: [{role,content,ts?}…] }.
   if (path.startsWith('/api/tutor/') && req.method === 'PUT') {
     const trackSlug = decodeURIComponent(path.slice('/api/tutor/'.length));
+    if (!isSafeSegment(trackSlug)) return rejectBadSegment(res, 'track slug', trackSlug);
     if (!existsSync(trackDir(trackSlug))) return sendJSON(res, 404, { ok: false, error: 'track not found' });
     const body = await readBody(req);
     const history = Array.isArray(body?.history) ? body.history : [];
     const now = new Date().toISOString();
-    const normalized = history
+    const normalized = capChatHistory(history
       .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
-      .map((m) => ({ role: m.role, content: String(m.content || ''), ts: m.ts || now }));
-    try {
+      .map((m) => ({ role: m.role, content: String(m.content || ''), ts: m.ts || now })));
+    // Lock on the tutor file so a concurrent POST /api/tutor doesn't
+    // interleave with this rewrite.
+    return await runWithLock(`tutor:${trackSlug}`, res, async () => {
       await rewriteChatLines(
         tutorChatPath(trackSlug),
         () => ({ kind: 'tutor', track: trackSlug, created_at: now }),
         normalized,
       );
-      const data = await loadTutorChat(trackSlug);
-      return sendJSON(res, 200, { ok: true, ...data });
-    } catch (e) {
-      return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
-    }
+      return await loadTutorChat(trackSlug);
+    });
   }
 
   // POST /api/tutor — streaming, multi-turn, persists per-track
   if (path === '/api/tutor' && req.method === 'POST') {
     const body = await readBody(req);
     if (!body?.track) return sendJSON(res, 400, { ok: false, error: 'track required' });
+    if (!isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    // Serialize POSTs to the same tutor — two simultaneous turns racing on
+    // the same .jsonl file would lose history (the slower writer's
+    // append clobbered the earlier read).
+    if (lessonLocks.has(`tutor:${body.track}`)) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'another tutor turn in flight' }));
+    }
+    lessonLocks.set(`tutor:${body.track}`, true);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -430,7 +544,13 @@ async function handle(req, res) {
     let aborted = false;
     let fullText = '';
     let child = null;
-    req.on('close', () => { aborted = true; try { child?.kill('SIGTERM'); } catch {} });
+    const tutorLockKey = `tutor:${body.track}`;
+    const releaseLock = () => { lessonLocks.delete(tutorLockKey); };
+    req.on('close', () => {
+      aborted = true;
+      try { child?.kill('SIGTERM'); } catch {}
+      releaseLock();
+    });
     child = spawnClaudeTutorStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
@@ -446,9 +566,11 @@ async function handle(req, res) {
           write({ type: 'done', ...meta });
           res.end();
         }
+        releaseLock();
       },
       onError: (e) => {
         if (!aborted) { write({ type: 'error', error: String(e?.message || e) }); res.end(); }
+        releaseLock();
       },
     });
     return;
@@ -457,6 +579,18 @@ async function handle(req, res) {
   if (path === '/api/intake' && req.method === 'POST') {
     const body = await readBody(req);
     if (!body?.track) return sendJSON(res, 400, { ok: false, error: 'track required' });
+    if (!isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    // Intake writes into the same tutor-chat.jsonl that POST /api/tutor uses.
+    // Serialize on the same lock key so the two endpoints don't race each
+    // other (e.g. user finalized intake, then opened the tutor panel
+    // before the intake's append completed).
+    if (lessonLocks.has(`tutor:${body.track}`)) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'another tutor/intake turn in flight' }));
+    }
+    lessonLocks.set(`tutor:${body.track}`, true);
+    const intakeLockKey = `tutor:${body.track}`;
+    const releaseIntakeLock = () => { lessonLocks.delete(intakeLockKey); };
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -467,7 +601,11 @@ async function handle(req, res) {
     let aborted = false;
     let fullText = '';
     let child = null;
-    req.on('close', () => { aborted = true; try { child?.kill('SIGTERM'); } catch {} });
+    req.on('close', () => {
+      aborted = true;
+      try { child?.kill('SIGTERM'); } catch {}
+      releaseIntakeLock();
+    });
     child = spawnClaudeIntakeStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
@@ -482,13 +620,21 @@ async function handle(req, res) {
         try {
           await appendTutorChat(body.track, body.user_message, answer);
         } catch {}
+        // On `action: finalize`, the intake skill wrote curriculum.md.
+        // The file watcher only watches `lessons/`, so emit an explicit
+        // SSE event here so connected clients reload.
+        if (body?.action === 'finalize') {
+          try { broadcast({ type: 'curriculum-change', track: body.track }); } catch {}
+        }
         if (!aborted) {
           write({ type: 'done', ...meta, full_text: answer });
           res.end();
         }
+        releaseIntakeLock();
       },
       onError: (e) => {
         if (!aborted) { write({ type: 'error', error: String(e?.message || e) }); res.end(); }
+        releaseIntakeLock();
       },
     });
     return;
@@ -497,6 +643,7 @@ async function handle(req, res) {
   // /api/tracks/<slug>/export → streams a .tgz
   if (path.startsWith('/api/tracks/') && path.endsWith('/export') && req.method === 'GET') {
     const slug = decodeURIComponent(path.slice('/api/tracks/'.length, -'/export'.length));
+    if (!isSafeSegment(slug)) return rejectBadSegment(res, 'track slug', slug);
     if (!existsSync(trackDir(slug))) {
       return sendJSON(res, 404, { ok: false, error: 'track not found' });
     }
@@ -599,6 +746,7 @@ async function handle(req, res) {
   // /api/tracks/<slug>/curriculum (read)
   if (path.startsWith('/api/tracks/') && path.endsWith('/curriculum') && req.method === 'GET') {
     const trackSlug = decodeURIComponent(path.slice('/api/tracks/'.length, -'/curriculum'.length));
+    if (!isSafeSegment(trackSlug)) return rejectBadSegment(res, 'track slug', trackSlug);
     const file = join(STUDYGROUND_DIR, 'tracks', trackSlug, 'curriculum.md');
     try {
       const content = await readFile(file, 'utf8');
@@ -613,6 +761,8 @@ async function handle(req, res) {
   if (path === '/api/threads' && req.method === 'GET') {
     const lesson = url.searchParams.get('lesson');
     const track = url.searchParams.get('track');
+    if (track && !isSafeSegment(track)) return rejectBadSegment(res, 'track slug', track);
+    if (lesson && !isSafeSegment(lesson)) return rejectBadSegment(res, 'lesson slug', lesson);
     try {
       const threads = await listThreads({ track, lesson });
       return sendJSON(res, 200, { ok: true, threads });
@@ -623,6 +773,7 @@ async function handle(req, res) {
 
   if (path.startsWith('/api/thread/')) {
     const id = decodeURIComponent(path.slice('/api/thread/'.length));
+    if (!isSafeSegment(id)) return rejectBadSegment(res, 'thread id', id);
     const found = await findThreadFile(id);
     if (!found) return sendJSON(res, 404, { ok: false, error: 'not found' });
     if (req.method === 'DELETE') {
@@ -678,7 +829,9 @@ async function handle(req, res) {
 
   if (path === '/api/save-thread' && req.method === 'POST') {
     const body = await readBody(req);
-    const key = `save-thread:${body?.lesson}`;
+    if (body?.track && !isSafeSegment(body.track)) return rejectBadSegment(res, 'track slug', body.track);
+    if (body?.lesson && !isSafeSegment(body.lesson)) return rejectBadSegment(res, 'lesson slug', body.lesson);
+    const key = `save-thread:${body?.track}:${body?.lesson}`;
     return await runWithLock(key, res, () =>
       spawnClaudeSaveThread({ studygroundDir: STUDYGROUND_DIR, pluginRoot: PLUGIN_ROOT, body }),
     );
@@ -769,11 +922,20 @@ async function writeChatLines(jsonlPath, makeMeta, messages) {
 
 // Overwrite the file with a fresh meta line + the supplied message history.
 // Used by the "edit a past message → truncate & re-run" flow.
+// Atomic: write to a temp file in the same dir, fsync, then rename — a
+// crash mid-write can't leave the destination half-written.
 async function rewriteChatLines(jsonlPath, makeMeta, messages) {
   await mkdir(dirname(jsonlPath), { recursive: true });
   const lines = [JSON.stringify({ type: 'meta', ...makeMeta() })];
   for (const m of messages) lines.push(JSON.stringify(m));
-  await writeFile(jsonlPath, lines.join('\n') + '\n');
+  const tmp = `${jsonlPath}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, lines.join('\n') + '\n');
+  try {
+    await rename(tmp, jsonlPath);
+  } catch (e) {
+    try { await unlink(tmp); } catch {}
+    throw e;
+  }
 }
 
 function tutorChatPath(track) {
@@ -799,13 +961,23 @@ async function loadTutorChat(track) {
 }
 
 async function appendTutorChat(track, userMessage, answer) {
+  if (!isSafeSegment(track)) throw new Error('appendTutorChat: invalid track');
   const file = tutorChatPath(track);
-  await readChatJsonl(file, tutorChatLegacyPath(track)); // triggers migration if needed
+  const { history: existing } = await readChatJsonl(file, tutorChatLegacyPath(track));
   const now = new Date().toISOString();
   const msgs = [];
   if (userMessage) msgs.push({ role: 'user', content: userMessage, ts: now });
   msgs.push({ role: 'assistant', content: answer, ts: now });
-  await writeChatLines(file, () => ({ kind: 'tutor', track, created_at: now }), msgs);
+  // If the post-append history would exceed CHAT_HISTORY_MAX_MESSAGES, do
+  // an atomic full rewrite that drops the oldest entries. The normal case
+  // stays a cheap appendFile.
+  const projectedLen = existing.length + msgs.length;
+  if (projectedLen > CHAT_HISTORY_MAX_MESSAGES) {
+    const trimmed = capChatHistory([...existing, ...msgs]);
+    await rewriteChatLines(file, () => ({ kind: 'tutor', track, created_at: now }), trimmed);
+  } else {
+    await writeChatLines(file, () => ({ kind: 'tutor', track, created_at: now }), capChatHistory(msgs));
+  }
   return loadTutorChat(track);
 }
 
@@ -1125,22 +1297,9 @@ async function uniqueFilename(dir, name) {
 }
 
 async function listMaterials(slug) {
-  const dir = join(STUDYGROUND_DIR, 'tracks', slug, 'materials');
-  const files = await readdir(dir).catch(() => []);
-  const out = [];
-  for (const f of files) {
-    if (f.startsWith('.')) continue;
-    try {
-      const st = await stat(join(dir, f));
-      out.push({
-        name: f,
-        size: st.size,
-        mtime: st.mtime.toISOString(),
-      });
-    } catch {}
-  }
-  out.sort((a, b) => b.mtime.localeCompare(a.mtime));
-  return out;
+  // Materials manifest (pages / approx_tokens / status) merged with on-disk
+  // stat info. Hidden files (.text/, INDEX.md) are excluded by the helper.
+  return await listMaterialsWithStats({ studygroundDir: STUDYGROUND_DIR, slug });
 }
 
 async function listThreads({ track, lesson } = {}) {
@@ -1256,6 +1415,18 @@ writeFileSync(
 
 // Run idempotent boot migration BEFORE starting watcher (so watches go on new dirs)
 await migrateLayoutIfNeeded().catch((e) => console.warn('[migrate] failed:', e?.message));
+
+// Wire materials orchestrator events into the SSE channel so the web UI can
+// reflect extraction progress in real time.
+onMaterialEvent((ev) => broadcast(ev));
+
+// Fire-and-forget reconcile: bring every track's text mirrors + indices up to
+// date with the on-disk materials/. Cheap when everything matches; only does
+// real work when files were dropped in externally or extraction failed last
+// run.
+reconcileAll({ studygroundDir: STUDYGROUND_DIR }).catch((e) =>
+  console.warn('[materials] boot reconcile failed:', e?.message),
+);
 
 startWatcher(STUDYGROUND_DIR, broadcast);
 
