@@ -8,7 +8,15 @@ import { join } from 'node:path';
 const activeWatches = new Map(); // key → watcher
 
 function watchDir(key, dir, persistent, onEvent) {
-  if (activeWatches.has(key)) return;
+  // If the dir still exists and a watch is already registered, reuse it.
+  // Otherwise drop the stale entry so we can attach to a freshly-recreated
+  // dir under the same path (delete-recreate is common across test runs
+  // and import flows).
+  if (activeWatches.has(key)) {
+    if (existsSync(dir)) return;
+    try { activeWatches.get(key)?.close(); } catch {}
+    activeWatches.delete(key);
+  }
   try {
     const w = watch(dir, { persistent }, onEvent);
     activeWatches.set(key, w);
