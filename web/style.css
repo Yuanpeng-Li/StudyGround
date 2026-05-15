@@ -1677,11 +1677,18 @@ main table tbody td {
 main table tbody tr:last-child td {
   border-bottom: none;
 }
+/* Subtle zebra so adjacent rows are visually separated even when both
+   cells are short. Odd rows stay on the page bg; even rows take a faint
+   wash. Keep the wash gentle — heavy striping clashes with the serif
+   reading column. */
+main table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-sunken) 45%, transparent);
+}
 main table tbody tr {
   transition: background 100ms ease;
 }
 main table tbody tr:hover {
-  background: color-mix(in srgb, var(--bg-sunken) 65%, transparent);
+  background: color-mix(in srgb, var(--bg-sunken) 80%, transparent);
 }
 main table code {
   /* Inside table cells, inline code shouldn't have a heavy border. */
