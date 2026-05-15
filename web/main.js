@@ -329,14 +329,13 @@ md.renderer.rules.sg_question = (tokens, idx) => {
   // math rule. Keep the raw source on data-source so onAskClick can recover
   // the clean string (the rendered katex DOM's textContent is unusable).
   const rendered = md.renderInline(text, {});
-  const label = kind === 'btw' ? 'btw' : 'q';
-  const dig = kind === 'btw'
-    ? `<button class="sg-q-dig" data-action="dig-deeper" data-question="${escapeHtml(text)}" title="dig deeper into this">dig deeper</button>`
-    : '';
+  const label = kind === 'btw' ? 'deeper' : 'q';
+  // The renderer emits a flat <div>; mergeQuestionBlocks() turns this + its
+  // adjacent <details>/.sg-answer sibling into a single <details> so the
+  // question is the toggle (click to expand/collapse the answer body).
   return `<div class="sg-question ${kind}" data-index="${index}" data-kind="${kind}" data-source="${escapeHtml(text)}">
     <span class="sg-q-label">${label}</span>
     <span class="sg-q-text">${rendered}</span>
-    ${dig}
   </div>\n`;
 };
 
@@ -429,12 +428,19 @@ function escapeHtml(s) {
 // it lets the test verify the exact pipeline the chat panel uses.
 if (typeof window !== 'undefined') {
   window.__mdRender = (text) => md.render(text, {});
+  // Test-only hooks so Playwright can open the btw panel deterministically
+  // (real selectionchange events are flaky in headless mode) and verify
+  // the selection-to-LaTeX conversion in isolation.
+  window.__openChatPanel = (sel) => openChatPanel(sel);
+  window.__selectionToTextWithLatex = (sel) => selectionToTextWithLatex(sel);
 }
 
 // ---------- App state ----------
 // ---------- Theme toggle (works for any .theme-toggle on the page) ----------
 const THEMES = ['auto', 'light', 'dark'];
-const THEME_LABEL = { auto: 'auto', light: 'light', dark: 'dark' };
+const ICON_SUN = '<svg class="sg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>';
+const ICON_MOON = '<svg class="sg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+
 function getStoredTheme() {
   return localStorage.getItem('sg-theme') || 'auto';
 }
@@ -444,8 +450,13 @@ function applyTheme(theme) {
     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
     : theme;
   root.setAttribute('data-theme', actual);
+  const icon = actual === 'dark' ? ICON_MOON : ICON_SUN;
   for (const btn of document.querySelectorAll('.theme-toggle')) {
-    btn.textContent = THEME_LABEL[theme];
+    btn.innerHTML = icon;
+    btn.dataset.theme = theme;
+    btn.dataset.applied = actual;
+    btn.title = `theme: ${theme}${theme === 'auto' ? ' (following system)' : ''} — click to switch`;
+    btn.setAttribute('aria-label', `theme: ${theme}`);
   }
 }
 applyTheme(getStoredTheme());
@@ -453,9 +464,7 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
   if (getStoredTheme() === 'auto') applyTheme('auto');
 });
 document.addEventListener('DOMContentLoaded', () => {
-  for (const btn of document.querySelectorAll('.theme-toggle')) {
-    btn.textContent = THEME_LABEL[getStoredTheme()];
-  }
+  applyTheme(getStoredTheme());
   document.addEventListener('click', (ev) => {
     const btn = ev.target.closest('.theme-toggle');
     if (!btn) return;
@@ -574,6 +583,195 @@ function lessonProgressPct(slug, summary, isCompleted) {
   return Math.min(100, Math.round(((doneAsk + doneEx) / totalUnits) * 100));
 }
 
+// Render a short string of markdown (math + inline formatting) into HTML
+// suitable for chrome / chip / quote contexts — strips the duplicate
+// katex-mathml clones so textContent stays readable.
+function renderInlineChrome(src) {
+  if (!src) return '';
+  const html = md.renderInline(String(src), {});
+  const tmp = document.createElement('span');
+  tmp.innerHTML = html;
+  tmp.querySelectorAll('.katex-mathml').forEach((n) => n.remove());
+  return tmp.innerHTML;
+}
+
+// Merge each .sg-question (q + deeper) with its adjacent answer block into
+// a single <details> so the question itself is the toggle: click to expand
+// the answer inline, click again to collapse. Previously these rendered as
+// two separate stacked rectangles (question + folded details / Ask card),
+// which felt redundant — same text twice.
+//
+//   .sg-question.btw  + <details><summary>deeper</summary>BODY</details>
+//     → <details class="sg-question btw"><summary>QUESTION</summary>BODY</details>
+//
+//   .sg-question.q    + .sg-answer.pending OR .sg-answer.answered
+//     → <details class="sg-question q"><summary>QUESTION</summary>{Ask | answer}</details>
+function mergeQuestionBlocks(root) {
+  if (!root) return;
+  const dryLabels = new Set(['btw', 'deeper', 'btw — saved chat']);
+
+  // Find the next "meaningful" element sibling, skipping markdown-it's empty
+  // text wrappers (whitespace-only paragraphs).
+  function nextEl(node) {
+    let n = node.nextElementSibling;
+    while (n && n.children.length === 0 && !(n.textContent || '').trim()) {
+      n = n.nextElementSibling;
+    }
+    return n;
+  }
+
+  function buildMerged(q, bodyNodes, openByDefault) {
+    const merged = document.createElement('details');
+    merged.className = q.className;
+    for (const k of Object.keys(q.dataset)) merged.dataset[k] = q.dataset[k];
+    if (openByDefault) merged.open = true;
+    const summaryEl = document.createElement('summary');
+    summaryEl.innerHTML = q.innerHTML;
+    merged.appendChild(summaryEl);
+    if (bodyNodes && bodyNodes.length) {
+      const body = document.createElement('div');
+      body.className = 'sg-question-body';
+      for (const n of bodyNodes) body.appendChild(n);
+      merged.appendChild(body);
+    }
+    return merged;
+  }
+
+  // Deeper / btw blocks paired with a follow-up <details><summary>deeper</summary>
+  for (const q of [...root.querySelectorAll('.sg-question.btw')]) {
+    const sibling = nextEl(q);
+    let bodyNodes = null;
+    if (sibling && sibling.tagName === 'DETAILS') {
+      const summary = sibling.querySelector(':scope > summary');
+      const label = (summary?.textContent || '').trim().toLowerCase();
+      if (dryLabels.has(label)) {
+        bodyNodes = [...sibling.childNodes].filter(
+          (n) => !(n.nodeType === 1 && n.tagName === 'SUMMARY'),
+        );
+        sibling.remove();
+      }
+    }
+    // Default state: collapsed (user has to click to dig deeper).
+    q.replaceWith(buildMerged(q, bodyNodes, false));
+  }
+
+  // Q blocks paired with .sg-answer (pending Ask button OR answered body).
+  // The markdown rule emits data-kind="main" for `?>` questions — match
+  // that explicitly so we don't accidentally re-process the .btw blocks
+  // already merged above.
+  for (const q of [...root.querySelectorAll('.sg-question:not(.btw)')]) {
+    const sibling = nextEl(q);
+    if (!sibling || !sibling.classList.contains('sg-answer')) continue;
+    const isAnswered = sibling.classList.contains('answered');
+    // Keep the .sg-answer element itself as the body — preserves its
+    // dataset/handlers (the Ask button is wired through event delegation).
+    q.replaceWith(buildMerged(q, [sibling], /* open */ isAnswered));
+  }
+
+  // Defensive fix-up for LLM-malformed details: when the `learn` / `next`
+  // skill collapses the spec's two-block shape into a single
+  //   <details><summary>?> question text</summary>body</details>
+  // (or `?>>`), the marker leaks into the summary verbatim. Detect that
+  // here and rewrite into the proper merged .sg-question shape so the
+  // rendered lesson still looks right.
+  const markerRe = /^\s*(\?>{1,2})\s+(.+)$/s;
+  for (const det of [...root.querySelectorAll('details:not(.sg-question)')]) {
+    const summary = det.querySelector(':scope > summary');
+    if (!summary) continue;
+    // Reconstruct the summary's markdown source so $math$ round-trips:
+    // drop the duplicate katex-mathml clone, swap each .sg-math span back
+    // to `$<latex>$`. textContent alone would give the doubled visible
+    // KaTeX layout ("dk\sqrt{d_k}dk").
+    const clone = summary.cloneNode(true);
+    clone.querySelectorAll('.katex-mathml').forEach((n) => n.remove());
+    clone.querySelectorAll('.sg-math').forEach((el) => {
+      const latex = el.getAttribute('data-latex') || '';
+      const isBlock = el.classList.contains('sg-math-block');
+      el.replaceWith(document.createTextNode(isBlock ? `$$${latex}$$` : `$${latex}$`));
+    });
+    const source = (clone.textContent || '').trim();
+    const m = source.match(markerRe);
+    if (!m) continue;
+    const kind = m[1] === '?>' ? 'main' : 'btw';
+    const questionText = m[2].trim();
+    if (!questionText) continue;
+    const fakeQ = document.createElement('div');
+    fakeQ.className = `sg-question ${kind === 'btw' ? 'btw' : ''}`.trim();
+    fakeQ.dataset.kind = kind;
+    fakeQ.dataset.source = questionText;
+    const label = kind === 'btw' ? 'deeper' : 'q';
+    fakeQ.innerHTML =
+      `<span class="sg-q-label">${label}</span>` +
+      `<span class="sg-q-text">${md.renderInline(questionText, {})}</span>`;
+    const bodyNodes = [...det.childNodes].filter(
+      (n) => !(n.nodeType === 1 && n.tagName === 'SUMMARY'),
+    );
+    // Default: deeper (btw) collapsed, q open (the answer is right there).
+    const openByDefault = kind === 'main' ? true : !!det.open;
+    det.replaceWith(buildMerged(fakeQ, bodyNodes, openByDefault));
+  }
+}
+
+// Decorate every <pre> with a "Copy" button in the top-right corner.
+// Click → write the code text to the clipboard, briefly flip the label.
+function decorateCodeBlocks(root) {
+  if (!root) return;
+  for (const pre of root.querySelectorAll('pre')) {
+    if (pre.querySelector(':scope > .sg-pre-copy')) continue; // already wired
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sg-pre-copy';
+    btn.dataset.label = 'copy';
+    btn.title = 'copy code';
+    btn.setAttribute('aria-label', 'copy code');
+    btn.innerHTML = `
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="9" width="11" height="11" rx="2"/>
+        <path d="M5 15V6a2 2 0 0 1 2-2h9"/>
+      </svg>
+      <span class="sg-pre-copy-label">copy</span>`;
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // textContent of the <code> child (or the <pre> if no <code>) is the raw
+      // source — KaTeX/markdown-it-highlightjs both leave spans inside, but
+      // textContent flattens them.
+      const codeEl = pre.querySelector('code') || pre;
+      const text = codeEl.textContent || '';
+      try {
+        await navigator.clipboard.writeText(text);
+        flashCopy(btn, 'copied!');
+      } catch {
+        // Fallback: select + execCommand for older browsers / non-secure ctx
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(codeEl);
+          const sel = window.getSelection();
+          sel.removeAllRanges(); sel.addRange(range);
+          document.execCommand('copy');
+          sel.removeAllRanges();
+          flashCopy(btn, 'copied!');
+        } catch {
+          flashCopy(btn, 'failed');
+        }
+      }
+    });
+    pre.appendChild(btn);
+  }
+}
+function flashCopy(btn, msg) {
+  const label = btn.querySelector('.sg-pre-copy-label');
+  if (!label) return;
+  const prev = label.textContent;
+  label.textContent = msg;
+  btn.classList.add('flashed');
+  clearTimeout(btn._flashT);
+  btn._flashT = setTimeout(() => {
+    label.textContent = prev;
+    btn.classList.remove('flashed');
+  }, 1100);
+}
+
 function buildOutline() {
   sidebarOutline.innerHTML = '';
   const headings = view.querySelectorAll('h2, h3');
@@ -594,13 +792,13 @@ function buildOutline() {
     clone.querySelectorAll('.katex-mathml').forEach((n) => n.remove());
     // Also strip the section's own ¶/btw buttons if any leaked in via markdown
     clone.querySelectorAll('.sg-q-dig, .ask-btn').forEach((n) => n.remove());
-    items.push({ level: h.tagName, html: clone.innerHTML.trim(), id });
+    items.push({ level: h.tagName, html: clone.innerHTML.trim(), text: clone.textContent.trim(), id });
   }
   sidebarOutline.innerHTML = items
     .map(
       (it) =>
         `<li class="outline-li">
-          <a href="#${it.id}" data-action="jump-section" data-id="${it.id}" class="outline-${it.level === 'H2' ? 2 : 3}">${it.html}</a>
+          <a href="#${it.id}" data-action="jump-section" data-id="${it.id}" class="outline-${it.level === 'H2' ? 2 : 3}" title="${escapeHtml(it.text)}">${it.html}</a>
           <button class="outline-btw" data-action="btw-outline" data-id="${it.id}" title="btw — chat about this section">btw</button>
         </li>`,
     )
@@ -657,7 +855,9 @@ async function uploadMaterial(track, file) {
       body: buf,
     }).then((r) => r.json());
     if (!r.ok) throw new Error(r.error || 'upload failed');
-    setStatus(`uploaded ${r.name}`);
+    setStatus(r.renamed
+      ? `uploaded as ${r.name} (auto-renamed to avoid overwriting an existing file)`
+      : `uploaded ${r.name}`);
     // Refresh whichever list is visible for this track
     if (track === currentTrack) loadMaterials();
     if (track === intakeTrack) {
@@ -732,14 +932,17 @@ async function loadThreads() {
     }
     sidebarThreads.innerHTML = threads
       .map((t) => {
-        const preview = (t.first_question || t.selection || '').slice(0, 60);
+        // Use the user-set name if any, otherwise fall back to the first
+        // question (the prior default).
+        const label = (t.name || t.first_question || t.selection || '').slice(0, 60);
         const ago = relTime(t.updated_at);
-        return `<li class="thread-li">
+        return `<li class="thread-li" data-id="${escapeHtml(t.id)}">
           <button class="thread-item" data-action="open-thread" data-id="${escapeHtml(t.id)}" title="${escapeHtml(t.selection || '')}">
-            <span class="thread-preview">${escapeHtml(preview)}</span>
+            <span class="thread-preview" data-label="${escapeHtml(label)}">${escapeHtml(label)}</span>
             <span class="thread-meta">${t.turns}T · ${ago}</span>
           </button>
           <div class="thread-actions">
+            <button class="thread-act" data-action="rename-thread" data-id="${escapeHtml(t.id)}" data-current="${escapeHtml(t.name || '')}" title="rename" aria-label="rename">✎</button>
             <button class="thread-act" data-action="download-thread" data-id="${escapeHtml(t.id)}" title="download .md" aria-label="download">⬇</button>
             <button class="thread-act" data-action="delete-thread" data-id="${escapeHtml(t.id)}" title="delete" aria-label="delete">×</button>
           </div>
@@ -747,6 +950,74 @@ async function loadThreads() {
       })
       .join('');
   } catch {}
+}
+
+// Swap the thread's label into an inline <input> so the user can rename
+// it. Enter saves, Esc cancels, click-away saves whatever was typed.
+function startThreadRename(triggerBtn) {
+  const id = triggerBtn.dataset.id;
+  const li = triggerBtn.closest('.thread-li');
+  if (!li) return;
+  const labelEl = li.querySelector('.thread-preview');
+  if (!labelEl || li.classList.contains('renaming')) return;
+  const original = labelEl.textContent;
+  const current = triggerBtn.dataset.current || '';
+  li.classList.add('renaming');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'thread-rename-input';
+  input.value = current || original;
+  input.placeholder = 'thread name';
+  input.maxLength = 120;
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const restore = (text) => {
+    if (settled) return; settled = true;
+    li.classList.remove('renaming');
+    const span = document.createElement('span');
+    span.className = 'thread-preview';
+    span.textContent = text;
+    input.replaceWith(span);
+  };
+  const save = async () => {
+    if (settled) return;
+    const newName = input.value.trim();
+    if (newName === current) { restore(original); return; }
+    settled = true;
+    li.classList.remove('renaming');
+    // Optimistic: swap text first, refresh from server in background
+    const span = document.createElement('span');
+    span.className = 'thread-preview';
+    span.textContent = newName || original;
+    input.replaceWith(span);
+    try {
+      const r = await fetch('/api/thread/' + encodeURIComponent(id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName }),
+      }).then((r) => r.json());
+      if (!r.ok) throw new Error(r.error || 'rename failed');
+      setStatus(newName ? `renamed thread → "${newName}"` : 'thread name cleared');
+      loadThreads();
+    } catch (e) {
+      setStatus('rename failed: ' + e.message);
+      loadThreads();
+    }
+  };
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); restore(original); }
+    ev.stopPropagation();
+  });
+  // Stop click/mousedown from bubbling up to the parent .thread-item button
+  // (which would otherwise open the thread the moment the user clicked into
+  // the input).
+  for (const ev of ['click', 'mousedown', 'pointerdown']) {
+    input.addEventListener(ev, (e) => e.stopPropagation());
+  }
+  input.addEventListener('blur', save);
 }
 
 function relTime(iso) {
@@ -814,32 +1085,50 @@ function extractSectionText(heading) {
   return joined;
 }
 
-let _sectionObserver = null;
+// Classic scrollspy: on every scroll/resize, find the heading whose top is
+// closest to but still above an offset (~80px below the sticky header), and
+// mark its outline link active. IntersectionObserver was brittle here — when
+// the user stopped between two headings or scrolled fast, no entry was
+// "intersecting" within the narrow threshold band and the active link froze.
+let _scrollSpyState = null;
 function setupSectionObserver(items) {
-  if (_sectionObserver) _sectionObserver.disconnect();
-  if (!items.length) return;
-  _sectionObserver = new IntersectionObserver(
-    (entries) => {
-      // Find topmost entry that's intersecting from above
-      let bestId = null;
-      let bestTop = -Infinity;
-      for (const e of entries) {
-        if (e.isIntersecting) {
-          const top = e.boundingClientRect.top;
-          if (top <= 80 && top > bestTop) {
-            bestTop = top;
-            bestId = e.target.id;
-          }
-        }
-      }
-      if (bestId) markOutlineActive(bestId);
-    },
-    { rootMargin: '-60px 0px -70% 0px', threshold: [0, 1] },
-  );
-  for (const it of items) {
-    const el = document.getElementById(it.id);
-    if (el) _sectionObserver.observe(el);
+  // Disconnect any previous listeners.
+  if (_scrollSpyState) {
+    window.removeEventListener('scroll', _scrollSpyState.onScroll, { passive: true });
+    window.removeEventListener('resize', _scrollSpyState.onScroll);
   }
+  if (!items.length) { _scrollSpyState = null; return; }
+  const headings = items
+    .map((it) => document.getElementById(it.id))
+    .filter(Boolean);
+  if (!headings.length) { _scrollSpyState = null; return; }
+  const OFFSET = 100; // distance from viewport top below which a heading counts as "passed"
+  let raf = 0;
+  let lastActive = null;
+  const tick = () => {
+    raf = 0;
+    let active = headings[0].id;
+    for (const h of headings) {
+      const top = h.getBoundingClientRect().top;
+      if (top <= OFFSET) active = h.id; else break;
+    }
+    // Edge case: if user has scrolled to the very bottom, force the last
+    // heading to be active (otherwise long final sections never highlight).
+    const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+    if (nearBottom) active = headings[headings.length - 1].id;
+    if (active !== lastActive) {
+      lastActive = active;
+      markOutlineActive(active);
+    }
+  };
+  const onScroll = () => {
+    if (raf) return;
+    raf = requestAnimationFrame(tick);
+  };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll);
+  _scrollSpyState = { onScroll };
+  tick(); // initial paint
 }
 
 function markOutlineActive(id) {
@@ -871,6 +1160,8 @@ async function loadLesson(slug) {
     ? `<div class="lesson-meta">${escapeHtml(meta.track || '')} · ${escapeHtml(meta.estimated_minutes || '?')} min</div>`
     : '';
   view.innerHTML = titleBlock + md.render(body, {});
+  decorateCodeBlocks(view);
+  mergeQuestionBlocks(view);
   // Title bar may contain $math$ from the frontmatter. Render it via md (inline
   // grammar so no <p> wrapper), then strip the duplicated katex-mathml clone.
   const titleSrc = meta.title || slug;
@@ -977,11 +1268,6 @@ view.addEventListener('click', async (ev) => {
   if (action === 'open-exercise') return onOpenExercise(ev.target);
   if (action === 'check-exercise') return onCheckExercise(ev.target);
   if (action === 'run-cell') return onRunCell(ev.target);
-  if (action === 'dig-deeper') {
-    ev.preventDefault();
-    const q = ev.target.dataset.question;
-    if (q) openChatPanel(q);
-  }
 });
 
 async function onAskClick(btn) {
@@ -1031,7 +1317,12 @@ async function onOpenExercise(btn) {
     if (!r.ok) throw new Error(r.error || 'scaffold failed');
     const created = r.created?.length ? ` (created: ${r.created.join(', ')})` : ' (already existed)';
     setStatus(`opening ${name}${created}`);
-    window.location.href = r.vscode_uri;
+    // Server tried `code --reuse-window` first (reuses existing window).
+    // Only fall back to the vscode:// protocol URI when that failed, since
+    // the URI handler tends to open a fresh window on WSL.
+    if (!r.opened_via_cli) {
+      window.location.href = r.vscode_uri;
+    }
   } catch (e) {
     setStatus('open error: ' + e.message);
     alert(e.message);
@@ -1101,6 +1392,22 @@ document.addEventListener('click', async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     toggleSidebar();
+  } else if (action === 'open-cmd-palette') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openCmdPalette();
+  } else if (action === 'toggle-section') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleSidebarSection(btn);
+  } else if (action === 'toggle-tutor-mode') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!currentTrack) return;
+    tutorPermission = tutorPermission === 'edit' ? 'read' : 'edit';
+    saveTutorPermission(currentTrack, tutorPermission);
+    syncTutorModeButton();
+    setStatus('tutor mode: ' + (tutorPermission === 'edit' ? 'can edit' : 'read-only'));
   } else if (action === 'open-thread') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1119,6 +1426,10 @@ document.addEventListener('click', async (ev) => {
     } catch (e) {
       setStatus('delete error: ' + e.message);
     }
+  } else if (action === 'rename-thread') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    startThreadRename(btn);
   } else if (action === 'download-thread') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1290,18 +1601,178 @@ let chatHistory = [];
 let chatSelection = '';
 let threadId = null;
 let chatMode = 'btw'; // 'btw' | 'tutor'
+let tutorPermission = 'read'; // 'read' | 'edit' — drives /api/tutor allowed-tools
+
+// Identity of the conversation currently mounted in the chat panel — either
+// `tutor:<track>` or `btw:<threadId>`. When close → re-open lands on the
+// same key, skip the destructive rebuild so the user sees the existing
+// transcript (and any in-flight stream keeps painting into the same DOM
+// node).
+let currentPanelKey = null;
+// In-flight streams, keyed like currentPanelKey. When the panel is rebuilt
+// for a different key (e.g., the user opens a different track's tutor),
+// the previous stream keeps running in the background; coming back to its
+// key re-attaches the running text to a fresh placeholder.
+const inflightStreams = new Map();
+
+function registerInflight(key, mode, userMessage, target) {
+  const e = {
+    key, mode,
+    userMessage: userMessage || '',
+    fullText: '',
+    target,
+    done: false,
+    controller: new AbortController(),
+  };
+  inflightStreams.set(key, e);
+  return e;
+}
+
+// Cancel an in-flight stream (Esc / Stop button). Server sees req.close
+// and SIGTERMs the spawned `claude` child.
+function abortInflight(key) {
+  const e = inflightStreams.get(key);
+  if (!e || e.done) return false;
+  try { e.controller.abort(); } catch {}
+  e.done = true;
+  inflightStreams.delete(key);
+  return true;
+}
+
+// Submit button doubles as a Stop button while a turn is streaming.
+function setChatSubmitMode(form, mode) {
+  if (!form) return;
+  const btn = form.querySelector('button[type="submit"]');
+  if (!btn) return;
+  btn.dataset.mode = mode;
+  btn.textContent = mode === 'stop' ? 'Stop' : 'Ask';
+}
+
+// Grow a <textarea> to fit its content up to the CSS max-height; the
+// scrollbar appears once the cap is hit. Cheap inline approach beats a
+// hidden mirror element for our usage.
+function autosizeTextarea(ta) {
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+}
+
+// --- input history (Up/Down through previously-typed prompts) ---
+const chatInputHistory = [];   // shared by btw + tutor (same panel)
+let chatInputHistoryIdx = -1;
+const intakeInputHistory = [];
+let intakeInputHistoryIdx = -1;
+
+function pushChatInputHistory(text) {
+  const t = (text || '').trim();
+  if (!t) return;
+  if (chatInputHistory[chatInputHistory.length - 1] === t) return;
+  chatInputHistory.push(t);
+  if (chatInputHistory.length > 80) chatInputHistory.shift();
+  chatInputHistoryIdx = -1;
+}
+function pushIntakeInputHistory(text) {
+  const t = (text || '').trim();
+  if (!t) return;
+  if (intakeInputHistory[intakeInputHistory.length - 1] === t) return;
+  intakeInputHistory.push(t);
+  if (intakeInputHistory.length > 80) intakeInputHistory.shift();
+  intakeInputHistoryIdx = -1;
+}
+function navigateInputHistory(input, store, idxRef, dir) {
+  if (!store.length) return false;
+  let idx = idxRef.value;
+  if (dir === 'up') {
+    if (idx === -1) idx = store.length - 1;
+    else if (idx > 0) idx--;
+    else return true; // already at oldest — swallow the keystroke
+  } else {
+    if (idx === -1) return false; // nothing to step forward to
+    idx++;
+    if (idx >= store.length) {
+      idxRef.value = -1;
+      input.value = '';
+      // place cursor at end
+      requestAnimationFrame(() => { try { input.setSelectionRange(0, 0); } catch {} });
+      return true;
+    }
+  }
+  idxRef.value = idx;
+  input.value = store[idx];
+  requestAnimationFrame(() => {
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+  });
+  return true;
+}
+
+// On rebuild, if a stream is still painting for this key, append its
+// in-progress text into a fresh placeholder and let the stream continue.
+function reattachInflightForKey(key) {
+  const e = inflightStreams.get(key);
+  if (!e || e.done) return null;
+  if (e.userMessage) {
+    appendChatMessage('user', e.userMessage);
+    chatHistory.push({ role: 'user', content: e.userMessage });
+  }
+  const placeholder = appendChatMessage('assistant', e.fullText ? '' : '…');
+  placeholder.classList.add('streaming');
+  if (e.fullText) placeholder.innerHTML = md.render(e.fullText, {});
+  e.target = placeholder;
+  const msgs = chatPanel.querySelector('.sg-chat-messages');
+  if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  // Re-disable the input until the stream finishes so the user can't fire
+  // a concurrent turn into the same conversation.
+  const input = chatPanel.querySelector('[name="q"]');
+  const btn = chatPanel.querySelector('.sg-chat-form button[type="submit"]');
+  if (input) input.disabled = true;
+  if (btn) btn.disabled = true;
+  return e;
+}
+
+function loadTutorPermission(track) {
+  try {
+    return localStorage.getItem(`sg-tutor-mode:${track}`) === 'edit' ? 'edit' : 'read';
+  } catch { return 'read'; }
+}
+function saveTutorPermission(track, mode) {
+  try { localStorage.setItem(`sg-tutor-mode:${track}`, mode); } catch {}
+}
+function syncTutorModeButton() {
+  const btn = chatPanel?.querySelector('[data-action="toggle-tutor-mode"]');
+  if (!btn) return;
+  btn.dataset.mode = tutorPermission;
+  btn.textContent = tutorPermission === 'edit' ? '✎ can edit' : '🔒 read-only';
+  btn.title = tutorPermission === 'edit'
+    ? 'tutor can modify files — click to switch back to read-only'
+    : 'read-only mode — click to allow tutor to edit files';
+  // Only visible in tutor mode
+  btn.style.display = chatMode === 'tutor' ? '' : 'none';
+}
 
 function ensureSelToolbar() {
   if (selToolbar) return selToolbar;
   selToolbar = document.createElement('div');
   selToolbar.className = 'sg-sel-toolbar';
   selToolbar.innerHTML = `<button data-action="btw-ask-selection" title="ask Claude about the highlighted passage"><span class="sg-sel-icon">✦</span><span class="sg-sel-text">ask</span></button>`;
-  selToolbar.addEventListener('mousedown', (ev) => ev.preventDefault()); // don't clear selection
+  // pointerdown happens before any selection collapse — capture the current
+  // selection text NOW and stash it on the toolbar, so the click handler has
+  // it even if the browser collapses the selection between events.
+  let stashed = '';
+  selToolbar.addEventListener('mousedown', (ev) => {
+    ev.preventDefault();
+    // selectionToTextWithLatex preserves real LaTeX source for rendered math
+    // instead of capturing the duplicated katex-html+mathml flattening.
+    stashed = selectionToTextWithLatex(window.getSelection());
+  }, true);
   selToolbar.addEventListener('click', (ev) => {
-    if (ev.target.dataset?.action === 'btw-ask-selection') {
-      const sel = window.getSelection()?.toString().trim();
-      if (sel) openChatPanel(sel);
-    }
+    // Use closest() so clicks on the inner <span> (icon / text) still match.
+    const btn = ev.target.closest?.('[data-action="btw-ask-selection"]');
+    if (!btn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const sel = stashed || selectionToTextWithLatex(window.getSelection());
+    stashed = '';
+    if (sel) openChatPanel(sel);
   });
   document.body.appendChild(selToolbar);
   return selToolbar;
@@ -1309,6 +1780,34 @@ function ensureSelToolbar() {
 
 function hideSelToolbar() {
   if (selToolbar) selToolbar.classList.remove('show');
+}
+
+// Read the current Selection as text but substitute LaTeX source for any
+// rendered .sg-math nodes (KaTeX renders both katex-html + katex-mathml,
+// so a naive sel.toString() doubles every formula into garbage like
+// "QKTdkdkQKT" for $QK^T/\sqrt{d_k}$). Used by both the copy handler
+// and the BTW ask flow so quoted passages preserve real LaTeX.
+function selectionToTextWithLatex(sel) {
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return '';
+  const range = sel.getRangeAt(0);
+  const frag = range.cloneContents();
+  // Drop the accessibility mathml copy first (it duplicates the visible math).
+  frag.querySelectorAll?.('.katex-mathml').forEach((n) => n.remove());
+  // Replace each .sg-math span with its data-latex wrapped in $...$ / $$...$$.
+  const mathNodes = frag.querySelectorAll?.('.sg-math') || [];
+  for (const el of mathNodes) {
+    const latex = el.getAttribute('data-latex') || '';
+    const isBlock = el.classList.contains('sg-math-block');
+    el.replaceWith(document.createTextNode(isBlock ? `$$${latex}$$` : `$${latex}$`));
+  }
+  // Use innerText (attaching off-screen) so block-level newlines stay reasonable.
+  const tmp = document.createElement('div');
+  tmp.style.cssText = 'position:absolute;left:-99999px;top:0;white-space:pre-wrap;';
+  tmp.appendChild(frag);
+  document.body.appendChild(tmp);
+  const text = tmp.innerText;
+  tmp.remove();
+  return text.trim();
 }
 
 // Substitute LaTeX source on copy when selection contains rendered math.
@@ -1323,34 +1822,12 @@ document.addEventListener('copy', (ev) => {
     (chatPanel && chatPanel.contains(anchor)) ||
     document.getElementById('view-intake')?.contains(anchor);
   if (!inMath) return;
-
-  // Clone the selected content and replace math nodes with $...$ / $$...$$
+  // Only override when the selection actually contains rendered math; otherwise
+  // let the browser's default copy carry whatever formatting it normally would.
   const range = sel.getRangeAt(0);
-  const frag = range.cloneContents();
-  const walker = document.createTreeWalker(frag, NodeFilter.SHOW_ELEMENT);
-  const toReplace = [];
-  let node;
-  while ((node = walker.nextNode())) {
-    if (node.classList && node.classList.contains('sg-math')) toReplace.push(node);
-  }
-  let hadMath = false;
-  for (const el of toReplace) {
-    const latex = el.getAttribute('data-latex') || '';
-    const isBlock = el.classList.contains('sg-math-block');
-    const wrapped = isBlock ? `$$${latex}$$` : `$${latex}$`;
-    el.replaceWith(document.createTextNode(wrapped));
-    hadMath = true;
-  }
-  if (!hadMath) return; // let the default copy work for plain text
-
-  // Serialize with reasonable block-level newlines by attaching off-screen briefly
-  const tmp = document.createElement('div');
-  tmp.style.cssText = 'position:absolute;left:-99999px;top:0;white-space:pre-wrap;';
-  tmp.appendChild(frag);
-  document.body.appendChild(tmp);
-  const text = tmp.innerText;
-  tmp.remove();
-
+  if (!range.cloneContents().querySelector('.sg-math')) return;
+  const text = selectionToTextWithLatex(sel);
+  if (!text) return;
   try {
     ev.clipboardData.setData('text/plain', text);
     ev.preventDefault();
@@ -1359,26 +1836,45 @@ document.addEventListener('copy', (ev) => {
   }
 });
 
-document.addEventListener('selectionchange', () => {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return hideSelToolbar();
-  const text = sel.toString().trim();
-  if (text.length < 3) return hideSelToolbar();
-  const range = sel.getRangeAt(0);
-  // Only show when selection is inside the lesson view
-  let node = range.commonAncestorContainer;
-  if (node.nodeType === 3) node = node.parentNode;
-  if (!view.contains(node)) return hideSelToolbar();
-  // Also don't trigger inside the chat panel itself
-  if (chatPanel && chatPanel.contains(node)) return hideSelToolbar();
-  const rect = range.getBoundingClientRect();
-  if (!rect.width && !rect.height) return hideSelToolbar();
-  const tb = ensureSelToolbar();
-  // Position above the selection, center on it; pill self-centers via translateX(-50%).
-  tb.style.top = window.scrollY + rect.top - 44 + 'px';
-  tb.style.left = window.scrollX + rect.left + rect.width / 2 + 'px';
-  tb.classList.add('show');
-});
+let _selToolbarRaf = 0;
+function scheduleSelToolbarUpdate() {
+  if (_selToolbarRaf) return;
+  _selToolbarRaf = requestAnimationFrame(() => {
+    _selToolbarRaf = 0;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return hideSelToolbar();
+    const text = sel.toString().trim();
+    if (text.length < 3) return hideSelToolbar();
+    const range = sel.getRangeAt(0);
+    let node = range.commonAncestorContainer;
+    if (node.nodeType === 3) node = node.parentNode;
+    if (!view.contains(node)) return hideSelToolbar();
+    if (chatPanel && chatPanel.contains(node)) return hideSelToolbar();
+    // Use the FIRST client rect (single line) rather than the bounding rect
+    // (union of all lines) so the pill anchors to the first line's gutter,
+    // not to a midway point of a multi-line union. Fall back to bounding rect
+    // when getClientRects is unavailable.
+    const rects = range.getClientRects?.();
+    const firstRect = (rects && rects.length) ? rects[0] : range.getBoundingClientRect();
+    if (!firstRect || (!firstRect.width && !firstRect.height)) return hideSelToolbar();
+    const lastRect = (rects && rects.length) ? rects[rects.length - 1] : firstRect;
+    const tb = ensureSelToolbar();
+    const pillHeight = 32;
+    const gap = 4;
+    // Prefer placing pill ABOVE the first line, in the gap between this
+    // paragraph's top and the previous element. If the line is too close to
+    // the viewport top, drop below the last line instead.
+    const aboveTop = firstRect.top - pillHeight - gap;
+    const placeBelow = aboveTop < 8;
+    const top = placeBelow ? lastRect.bottom + gap : aboveTop;
+    const centerX = (placeBelow ? lastRect : firstRect).left + (placeBelow ? lastRect : firstRect).width / 2;
+    tb.style.top = window.scrollY + top + 'px';
+    tb.style.left = window.scrollX + centerX + 'px';
+    tb.dataset.place = placeBelow ? 'below' : 'above';
+    tb.classList.add('show');
+  });
+}
+document.addEventListener('selectionchange', scheduleSelToolbarUpdate);
 
 function ensureChatPanel() {
   if (chatPanel) return chatPanel;
@@ -1389,6 +1885,7 @@ function ensureChatPanel() {
     <div class="sg-chat-head">
       <span class="sg-chat-title">btw</span>
       <div class="sg-chat-head-actions">
+        <button class="sg-chat-mode" data-action="toggle-tutor-mode" data-mode="read" title="read-only mode — click to allow file edits">🔒 read-only</button>
         <button class="sg-chat-copy" data-action="copy-thread-md" title="copy this conversation as markdown">copy md</button>
         <button class="sg-chat-save" data-action="save-chat" title="save this conversation as a ?>> block in the lesson" disabled>Save to lesson</button>
         <button class="sg-chat-close" data-action="close-chat" title="close (Esc)">×</button>
@@ -1398,7 +1895,7 @@ function ensureChatPanel() {
     <div class="sg-chat-messages"></div>
     <form class="sg-chat-form">
       <div class="sg-chat-quote-chip" title="this snippet (selected inside the panel) will be sent as context"></div>
-      <input type="text" name="q" placeholder="ask about this passage… (or highlight text here to quote it)" autocomplete="off" />
+      <textarea name="q" rows="1" placeholder="ask about this passage… (or highlight text here to quote it)" autocomplete="off"></textarea>
       <button type="submit">Ask</button>
     </form>
   `;
@@ -1406,12 +1903,58 @@ function ensureChatPanel() {
   chatPanel.querySelector('[data-action="close-chat"]').addEventListener('click', closeChatPanel);
   chatPanel.querySelector('[data-action="save-chat"]').addEventListener('click', onSaveChat);
   chatPanel.querySelector('.sg-chat-form').addEventListener('submit', onChatSubmit);
+  chatPanel.querySelector('.sg-chat-messages').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-action="edit-chat-msg"]');
+    if (!btn) return;
+    const msg = btn.closest('.sg-chat-msg.user');
+    if (msg) editChatMsgAndRerun(msg);
+  });
   document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && chatPanel.classList.contains('show')) closeChatPanel();
+    if (ev.key !== 'Escape') return;
+    if (!chatPanel.classList.contains('show')) return;
+    // Esc: if a turn is streaming, abort it. Otherwise close the panel.
+    if (currentPanelKey && inflightStreams.has(currentPanelKey)) {
+      abortInflight(currentPanelKey);
+      ev.preventDefault();
+    } else {
+      closeChatPanel();
+    }
+  });
+  const chatInput = chatPanel.querySelector('[name="q"]');
+  chatInput.addEventListener('keydown', (ev) => {
+    // Enter submits, Shift+Enter inserts a newline (Claude.app-style).
+    if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
+      ev.preventDefault();
+      // NB: requestSubmit() returns undefined, so `requestSubmit?.() || …`
+      // would double-fire — second submit sees the button in 'stop' mode
+      // and aborts the turn we just started. Use a real if/else.
+      const form = chatPanel.querySelector('.sg-chat-form');
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+      return;
+    }
+    if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+    // Only trigger history nav when caret is at start (↑) / end (↓), so
+    // editing inside multi-line text isn't hijacked.
+    const atStart = chatInput.selectionStart === 0 && chatInput.selectionEnd === 0;
+    const atEnd = chatInput.selectionStart === chatInput.value.length;
+    if (ev.key === 'ArrowUp' && !atStart) return;
+    if (ev.key === 'ArrowDown' && !atEnd) return;
+    const dir = ev.key === 'ArrowUp' ? 'up' : 'down';
+    const ref = { value: chatInputHistoryIdx };
+    const handled = navigateInputHistory(chatInput, chatInputHistory, ref, dir);
+    chatInputHistoryIdx = ref.value;
+    if (handled) ev.preventDefault();
+  });
+  // Any non-arrow typing resets the history pointer + grows the textarea
+  // to fit the current content (up to a CSS-enforced max height).
+  chatInput.addEventListener('input', () => {
+    chatInputHistoryIdx = -1;
+    autosizeTextarea(chatInput);
   });
   wireChatResize(chatPanel);
   wireChatPanelSelectionPreview(chatPanel);
-  restoreChatWidth(chatPanel);
+  restoreChatWidth();
   return chatPanel;
 }
 
@@ -1432,22 +1975,46 @@ function wireChatResize(panel) {
     if (!dragging) return;
     const dx = startX - ev.clientX;
     const w = Math.max(320, Math.min(window.innerWidth * 0.92, startW + dx));
-    panel.style.setProperty('--sg-chat-width', w + 'px');
+    // Write to :root so the body.sg-chat-open padding tracks the panel width.
+    document.documentElement.style.setProperty('--sg-chat-width', w + 'px');
+    updateOutlineLayout();
   });
   window.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
     handle.classList.remove('dragging');
     panel.classList.remove('dragging');
-    const w = panel.style.getPropertyValue('--sg-chat-width');
+    const w = document.documentElement.style.getPropertyValue('--sg-chat-width');
     try { if (w) localStorage.setItem('sg-chat-width', w); } catch {}
+    updateOutlineLayout();
   });
 }
 
-function restoreChatWidth(panel) {
+// Decide whether the inline outline rail has room to live alongside
+// whatever the user has open right now (chat panel of any width). The
+// chat panel is user-resizable, so static media queries can't catch
+// every overlap — recompute on open/close/resize.
+function updateOutlineLayout() {
+  const chatOpen = document.body.classList.contains('sg-chat-open');
+  if (!chatOpen) {
+    document.body.classList.remove('outline-no-room');
+    return;
+  }
+  const chatPanel = document.querySelector('.sg-chat-panel.show');
+  const chatW = chatPanel ? chatPanel.getBoundingClientRect().width : 440;
+  const sb = document.getElementById('sidebar');
+  const sbW = sb ? sb.getBoundingClientRect().width : 256;
+  // Need: sidebar + content-body padding + prose 896 + gap 72 + rail 320 + chat
+  // → vp >= sbW + 32 + 896 + 72 + 320 + chatW = sbW + 1320 + chatW
+  const needed = sbW + 1320 + chatW;
+  document.body.classList.toggle('outline-no-room', window.innerWidth < needed);
+}
+window.addEventListener('resize', updateOutlineLayout);
+
+function restoreChatWidth() {
   try {
     const saved = localStorage.getItem('sg-chat-width');
-    if (saved) panel.style.setProperty('--sg-chat-width', saved);
+    if (saved) document.documentElement.style.setProperty('--sg-chat-width', saved);
   } catch {}
 }
 
@@ -1469,10 +2036,11 @@ function setPanelQuote(panel, text) {
   panelStashedQuote = text;
   const chip = panel.querySelector('.sg-chat-quote-chip');
   if (!chip) return;
+  const truncated = text.slice(0, 240);
+  const tail = text.length > 240 ? '…' : '';
   chip.innerHTML =
     '<span class="sg-chat-quote-text">“' +
-    escapeHtml(text.slice(0, 240)) +
-    (text.length > 240 ? '…' : '') +
+    renderInlineChrome(truncated) + tail +
     '”</span>' +
     '<button class="sg-chat-quote-x" type="button" title="don\'t quote this">×</button>';
   chip.classList.add('show');
@@ -1508,7 +2076,8 @@ function getPanelSelection(panel) {
   // Don't capture text typed inside the input itself.
   const sNode = anchor.nodeType === 1 ? anchor : anchor.parentElement;
   if (sNode?.closest('input, textarea, .sg-chat-form')) return '';
-  return sel.toString().trim();
+  // Preserve LaTeX source for rendered math nodes.
+  return selectionToTextWithLatex(sel);
 }
 
 function toggleSidebar() {
@@ -1528,12 +2097,60 @@ function restoreSidebarState() {
     if (localStorage.getItem('sg-sidebar-collapsed') === '1') {
       document.querySelector('#view-reader .app')?.classList.add('sidebar-collapsed');
     }
+    // Restore per-section collapse state (materials / threads)
+    for (const name of ['materials', 'threads']) {
+      const collapsed = localStorage.getItem('sg-sec-' + name) === '1';
+      const sec = document.querySelector(`#sidebar [data-section="${name}"]`);
+      const tog = document.querySelector(`#sidebar [data-action="toggle-section"][data-section="${name}"]`);
+      if (sec) sec.classList.toggle('collapsed', collapsed);
+      if (tog) tog.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
   } catch {}
+}
+
+function toggleSidebarSection(triggerEl) {
+  const name = triggerEl?.dataset.section;
+  if (!name) return;
+  const sec = document.querySelector(`#sidebar [data-section="${name}"]`);
+  if (!sec) return;
+  const collapsed = !sec.classList.contains('collapsed');
+  sec.classList.toggle('collapsed', collapsed);
+  // Sync aria-expanded on the matching toggle button
+  const tog = document.querySelector(`#sidebar [data-action="toggle-section"][data-section="${name}"]`);
+  if (tog) tog.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  try { localStorage.setItem('sg-sec-' + name, collapsed ? '1' : '0'); } catch {}
+}
+
+// Re-enable the input + reset the submit-button to 'Ask' when no stream is
+// currently in flight for the panel's NEW key. Without this, switching
+// between conversations while one was streaming leaves the freshly-shown
+// panel with a disabled textarea and a stuck-on-'Stop' button (the prior
+// turn's finally-block bails out because currentPanelKey already moved on).
+function resetChatInputIfIdle(panel, panelKey) {
+  if (!panel) return;
+  const input = panel.querySelector('[name="q"]');
+  const form = panel.querySelector('.sg-chat-form');
+  const stillStreaming = panelKey && inflightStreams.has(panelKey) && !inflightStreams.get(panelKey).done;
+  if (input) input.disabled = !!stillStreaming;
+  setChatSubmitMode(form, stillStreaming ? 'stop' : 'ask');
 }
 
 function openChatPanel(selection, restoreThread = null) {
   hideSelToolbar();
   const panel = ensureChatPanel();
+  const targetThreadId = restoreThread?.id || null;
+  const newKey = `btw:${targetThreadId || 'new:' + (selection || '').slice(0, 64)}`;
+  // Same thread / same selection as last time — just show it.
+  if (currentPanelKey === newKey) {
+    chatMode = 'btw';
+    panel.classList.remove('tutor-mode');
+    panel.classList.add('show');
+    document.body.classList.add('sg-chat-open');
+    updateOutlineLayout();
+    resetChatInputIfIdle(panel, currentPanelKey);
+    setTimeout(() => panel.querySelector('[name="q"]').focus(), 50);
+    return;
+  }
   chatMode = 'btw';
   panel.classList.remove('tutor-mode');
   panel.querySelector('.sg-chat-title').textContent = 'btw';
@@ -1549,26 +2166,49 @@ function openChatPanel(selection, restoreThread = null) {
     chatHistory = [];
     threadId = (window.crypto?.randomUUID && window.crypto.randomUUID()) || (Date.now() + '-' + Math.random().toString(36).slice(2));
   }
-  panel.querySelector('.sg-chat-selection').textContent = chatSelection;
+  panel.querySelector('.sg-chat-selection').innerHTML = renderInlineChrome(chatSelection);
   const msgs = panel.querySelector('.sg-chat-messages');
   msgs.innerHTML = '';
   for (const m of chatHistory) appendChatMessage(m.role, m.content);
-  panel.querySelector('input[name="q"]').placeholder = 'ask about this passage… (or highlight text here to quote it)';
+  panel.querySelector('[name="q"]').placeholder = 'ask about this passage… (or highlight text here to quote it)';
   panel.classList.add('show');
+  document.body.classList.add('sg-chat-open');
+  updateOutlineLayout();
+  currentPanelKey = `btw:${threadId}`;
+  // If this thread already has a stream running (e.g. user re-opened from
+  // the sidebar while the previous turn was still painting), re-attach.
+  reattachInflightForKey(currentPanelKey);
+  resetChatInputIfIdle(panel, currentPanelKey);
   setChatSaveEnabled();
-  setTimeout(() => panel.querySelector('input[name="q"]').focus(), 50);
+  syncTutorModeButton();
+  setTimeout(() => panel.querySelector('[name="q"]').focus(), 50);
 }
 
 async function openTutorPanel() {
   if (!currentTrack) { setStatus('open a course first'); return; }
   hideSelToolbar();
   const panel = ensureChatPanel();
+  const newKey = `tutor:${currentTrack}`;
+  // Same conversation as last time — just show it. Any in-flight stream
+  // is still painting into the existing placeholder, so no rebuild needed.
+  if (currentPanelKey === newKey) {
+    chatMode = 'tutor';
+    panel.classList.add('tutor-mode');
+    panel.classList.add('show');
+    document.body.classList.add('sg-chat-open');
+    updateOutlineLayout();
+    resetChatInputIfIdle(panel, currentPanelKey);
+    setTimeout(() => panel.querySelector('[name="q"]').focus(), 50);
+    return;
+  }
   chatMode = 'tutor';
   panel.classList.add('tutor-mode');
   panel.querySelector('.sg-chat-title').textContent = 'tutor · ' + currentTrack;
   panel.querySelector('.sg-chat-selection').style.display = 'none';
   panel.querySelector('.sg-chat-save').style.display = 'none';
   clearPanelQuote(panel);
+  tutorPermission = loadTutorPermission(currentTrack);
+  syncTutorModeButton();
   chatSelection = '';
   threadId = null;
   // Restore persisted tutor history for this track
@@ -1581,28 +2221,49 @@ async function openTutorPanel() {
   const msgs = panel.querySelector('.sg-chat-messages');
   msgs.innerHTML = '';
   for (const m of chatHistory) appendChatMessage(m.role, m.content);
-  panel.querySelector('input[name="q"]').placeholder = 'ask the tutor anything… (or highlight text here to quote it)';
+  panel.querySelector('[name="q"]').placeholder = 'ask the tutor anything… (or highlight text here to quote it)';
   panel.classList.add('show');
-  setTimeout(() => panel.querySelector('input[name="q"]').focus(), 50);
-  // On first open (no history), trigger an opening status check
-  if (chatHistory.length === 0) {
-    sendTutorTurn(null);
+  document.body.classList.add('sg-chat-open');
+  updateOutlineLayout();
+  currentPanelKey = newKey;
+  // If a tutor turn for this track was started earlier (e.g. from a
+  // previous panel session), pick the stream back up.
+  reattachInflightForKey(newKey);
+  resetChatInputIfIdle(panel, currentPanelKey);
+  // Empty conversation — show a soft hint instead of auto-sending an
+  // opener. The user explicitly wants to start the conversation.
+  if (chatHistory.length === 0 && !inflightStreams.has(newKey)) {
+    const hint = document.createElement('div');
+    hint.className = 'sg-chat-empty-hint';
+    hint.textContent = 'Say anything to start — your tutor knows this course.';
+    panel.querySelector('.sg-chat-messages').appendChild(hint);
   }
+  setTimeout(() => panel.querySelector('[name="q"]').focus(), 50);
 }
 
 function closeChatPanel() {
   if (chatPanel) chatPanel.classList.remove('show');
-  chatHistory = [];
-  chatSelection = '';
-  threadId = null;
+  document.body.classList.remove('sg-chat-open');
+  updateOutlineLayout();
+  // Keep chatHistory / chatSelection / threadId / currentPanelKey intact:
+  // - re-opening the same panel restores instantly with no flicker;
+  // - any in-flight stream keeps writing to the (hidden) placeholder, and
+  //   on re-attach we fast-forward the text.
 }
 
 async function onChatSubmit(ev) {
   ev.preventDefault();
-  const input = ev.target.querySelector('input[name="q"]');
+  const submitBtn = ev.target.querySelector('button[type="submit"]');
+  // Submit button doubles as Stop while a turn is in flight.
+  if (submitBtn?.dataset.mode === 'stop') {
+    if (currentPanelKey) abortInflight(currentPanelKey);
+    return;
+  }
+  const input = ev.target.querySelector('[name="q"]');
   const rawQuestion = input.value.trim();
   if (!rawQuestion) return;
   if (chatMode === 'btw' && !chatSelection) return;
+  pushChatInputHistory(rawQuestion);
   // If the user highlighted text inside this panel before submitting, include
   // it as a quoted preamble so the AI sees what they were referring to.
   const panelSnippet = panelStashedQuote || getPanelSelection(chatPanel);
@@ -1610,18 +2271,23 @@ async function onChatSubmit(ev) {
     ? `> quoted from this chat:\n> ${panelSnippet.split('\n').join('\n> ')}\n\n${rawQuestion}`
     : rawQuestion;
   input.value = '';
+  autosizeTextarea(input);
   clearPanelQuote(chatPanel);
   window.getSelection()?.removeAllRanges();
   if (chatMode === 'tutor') {
     return sendTutorTurn(question);
   }
   input.disabled = true;
-  const submitBtn = ev.target.querySelector('button[type="submit"]');
-  submitBtn.disabled = true;
+  setChatSubmitMode(ev.target, 'stop');
   appendChatMessage('user', question);
   const historyBefore = chatHistory.slice();
   chatHistory.push({ role: 'user', content: question });
   const placeholder = appendChatMessage('assistant', '…');
+  // Capture the owning thread/key so the stream survives a panel rebuild
+  // (user closes panel + opens tutor + comes back).
+  const ownerThreadId = threadId;
+  const streamKey = `btw:${ownerThreadId}`;
+  const stream = registerInflight(streamKey, 'btw', question, placeholder);
   setStatus('btw asking…');
   try {
     const resp = await fetch('/api/btw-ask', {
@@ -1633,8 +2299,9 @@ async function onChatSubmit(ev) {
         selection: chatSelection,
         question,
         history: historyBefore,
-        thread_id: threadId,
+        thread_id: ownerThreadId,
       }),
+      signal: stream.controller.signal,
     });
     if (!resp.ok || !resp.body) {
       const errBody = await resp.text().catch(() => '');
@@ -1644,10 +2311,8 @@ async function onChatSubmit(ev) {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
-    let fullText = '';
     let meta = null;
     let errorMsg = null;
-    const msgs = chatPanel.querySelector('.sg-chat-messages');
 
     placeholder.textContent = '';
     placeholder.classList.add('streaming');
@@ -1664,9 +2329,12 @@ async function onChatSubmit(ev) {
         let ev;
         try { ev = JSON.parse(chunk.slice(6)); } catch { continue; }
         if (ev.type === 'delta') {
-          fullText += ev.text;
-          placeholder.innerHTML = md.render(fullText, {});
-          msgs.scrollTop = msgs.scrollHeight;
+          stream.fullText += ev.text;
+          stream.target.innerHTML = md.render(stream.fullText, {});
+          if (stream.target.isConnected) {
+            const msgs = chatPanel.querySelector('.sg-chat-messages');
+            if (msgs) msgs.scrollTop = msgs.scrollHeight;
+          }
         } else if (ev.type === 'done') {
           meta = ev;
         } else if (ev.type === 'error') {
@@ -1674,37 +2342,58 @@ async function onChatSubmit(ev) {
         }
       }
     }
-    placeholder.classList.remove('streaming');
+    stream.target.classList.remove('streaming');
     if (errorMsg) throw new Error(errorMsg);
-    if (!fullText && meta?.full_text) {
-      fullText = meta.full_text;
-      placeholder.innerHTML = md.render(fullText, {});
+    if (!stream.fullText && meta?.full_text) {
+      stream.fullText = meta.full_text;
+      stream.target.innerHTML = md.render(stream.fullText, {});
     }
-    chatHistory.push({ role: 'assistant', content: fullText });
-    setChatSaveEnabled();
+    // Push assistant message only if the panel is still showing this thread.
+    if (currentPanelKey === streamKey) {
+      chatHistory.push({ role: 'assistant', content: stream.fullText });
+      setChatSaveEnabled();
+    }
     if (meta) {
-      // server may have created a thread_id if we didn't supply one
-      if (meta.thread_id) threadId = meta.thread_id;
+      if (meta.thread_id && meta.thread_id !== ownerThreadId && currentPanelKey === streamKey) {
+        threadId = meta.thread_id;
+        currentPanelKey = `btw:${threadId}`;
+      }
       setStatus(`btw answered (${(meta.duration_ms / 1000).toFixed(1)}s, $${meta.cost_usd?.toFixed(3)})`);
     }
     loadThreads();
   } catch (e) {
-    placeholder.textContent = '✗ ' + e.message;
-    placeholder.classList.add('error');
-    setStatus('btw error: ' + e.message);
+    const aborted = e?.name === 'AbortError';
+    if (aborted) {
+      // Keep whatever partial text was painted; tag it interrupted.
+      stream.target.classList.remove('streaming');
+      stream.target.classList.add('interrupted');
+      if (!stream.fullText) stream.target.textContent = '(interrupted)';
+      if (currentPanelKey === streamKey) chatHistory.push({ role: 'assistant', content: stream.fullText || '(interrupted)' });
+      setStatus('btw interrupted');
+    } else {
+      stream.target.textContent = '✗ ' + e.message;
+      stream.target.classList.add('error');
+      setStatus('btw error: ' + e.message);
+    }
   } finally {
-    input.disabled = false;
-    submitBtn.disabled = false;
-    input.focus();
+    stream.done = true;
+    inflightStreams.delete(streamKey);
+    // Only restore focus / re-enable the input if the panel is still on
+    // this thread; otherwise we'd be poking another conversation's UI.
+    if (currentPanelKey === streamKey) {
+      input.disabled = false;
+      setChatSubmitMode(chatPanel.querySelector('.sg-chat-form'), 'ask');
+      input.focus();
+    }
   }
 }
 
 async function sendTutorTurn(userMessage) {
   const panel = chatPanel;
-  const input = panel.querySelector('input[name="q"]');
-  const submitBtn = panel.querySelector('button[type="submit"]');
+  const form = panel.querySelector('.sg-chat-form');
+  const input = panel.querySelector('[name="q"]');
   input.disabled = true;
-  submitBtn.disabled = true;
+  setChatSubmitMode(form, 'stop');
   if (userMessage) {
     appendChatMessage('user', userMessage);
     chatHistory.push({ role: 'user', content: userMessage });
@@ -1712,16 +2401,23 @@ async function sendTutorTurn(userMessage) {
   const placeholder = appendChatMessage('assistant', '…');
   placeholder.classList.add('streaming');
   setStatus('tutor thinking…');
+  // Capture which track owns this turn so it survives a panel switch.
+  const ownerTrack = currentTrack;
+  const streamKey = `tutor:${ownerTrack}`;
+  const ownerMode = tutorPermission;
+  const stream = registerInflight(streamKey, 'tutor', userMessage, placeholder);
   const historyBefore = userMessage ? chatHistory.slice(0, -1) : chatHistory.slice();
   try {
     const resp = await fetch('/api/tutor', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify({
-        track: currentTrack,
+        track: ownerTrack,
         user_message: userMessage,
         history: historyBefore,
+        mode: ownerMode,
       }),
+      signal: stream.controller.signal,
     });
     if (!resp.ok || !resp.body) {
       const t = await resp.text().catch(() => '');
@@ -1730,10 +2426,9 @@ async function sendTutorTurn(userMessage) {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
-    let fullText = '';
     let meta = null;
     let errMsg = null;
-    placeholder.textContent = '';
+    stream.target.textContent = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1746,10 +2441,12 @@ async function sendTutorTurn(userMessage) {
         let ev;
         try { ev = JSON.parse(chunk.slice(6)); } catch { continue; }
         if (ev.type === 'delta') {
-          fullText += ev.text;
-          placeholder.innerHTML = md.render(fullText, {});
-          const msgs = panel.querySelector('.sg-chat-messages');
-          msgs.scrollTop = msgs.scrollHeight;
+          stream.fullText += ev.text;
+          stream.target.innerHTML = md.render(stream.fullText, {});
+          if (stream.target.isConnected && currentPanelKey === streamKey) {
+            const msgs = chatPanel.querySelector('.sg-chat-messages');
+            if (msgs) msgs.scrollTop = msgs.scrollHeight;
+          }
         } else if (ev.type === 'done') {
           meta = ev;
         } else if (ev.type === 'error') {
@@ -1757,34 +2454,188 @@ async function sendTutorTurn(userMessage) {
         }
       }
     }
-    placeholder.classList.remove('streaming');
+    stream.target.classList.remove('streaming');
     if (errMsg) throw new Error(errMsg);
-    chatHistory.push({ role: 'assistant', content: fullText });
+    // Only mutate in-memory chatHistory if the panel is still mounted to
+    // this conversation; otherwise the server-persisted history is the
+    // authoritative copy and we'll reload it next time the user opens.
+    if (currentPanelKey === streamKey) {
+      chatHistory.push({ role: 'assistant', content: stream.fullText });
+    }
     if (meta) setStatus(`tutor replied (${(meta.duration_ms / 1000).toFixed(1)}s, $${meta.cost_usd?.toFixed(3)})`);
   } catch (e) {
-    placeholder.textContent = '✗ ' + e.message;
-    placeholder.classList.add('error');
-    placeholder.classList.remove('streaming');
-    setStatus('tutor error: ' + e.message);
+    const aborted = e?.name === 'AbortError';
+    if (aborted) {
+      stream.target.classList.remove('streaming');
+      stream.target.classList.add('interrupted');
+      if (!stream.fullText) stream.target.textContent = '(interrupted)';
+      if (currentPanelKey === streamKey) chatHistory.push({ role: 'assistant', content: stream.fullText || '(interrupted)' });
+      setStatus('tutor interrupted');
+    } else {
+      stream.target.textContent = '✗ ' + e.message;
+      stream.target.classList.add('error');
+      stream.target.classList.remove('streaming');
+      setStatus('tutor error: ' + e.message);
+    }
   } finally {
-    input.disabled = false;
-    submitBtn.disabled = false;
-    input.focus();
+    stream.done = true;
+    inflightStreams.delete(streamKey);
+    if (currentPanelKey === streamKey) {
+      input.disabled = false;
+      setChatSubmitMode(form, 'ask');
+      input.focus();
+    }
   }
 }
 
 function appendChatMessage(role, content) {
   const msg = document.createElement('div');
   msg.className = `sg-chat-msg ${role}`;
-  if (role === 'assistant' && content !== '…') {
+  // We render markdown for assistants; user messages stay as plain text so
+  // the edit textarea round-trips cleanly. The content lives in an inner
+  // `.sg-chat-msg-body` wrapper to keep the edit-button positioning simple.
+  if (role === 'user') {
+    const body = document.createElement('div');
+    body.className = 'sg-chat-msg-body';
+    body.textContent = content;
+    msg.appendChild(body);
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'sg-chat-msg-edit-btn';
+    editBtn.dataset.action = 'edit-chat-msg';
+    editBtn.title = 'edit this message and re-run from here';
+    editBtn.setAttribute('aria-label', 'edit');
+    editBtn.textContent = '✎';
+    msg.appendChild(editBtn);
+  } else if (content !== '…') {
     msg.innerHTML = md.render(content, {});
   } else {
     msg.textContent = content;
   }
   const msgs = chatPanel.querySelector('.sg-chat-messages');
+  // Drop the empty-state hint once a real message lands.
+  msgs.querySelector('.sg-chat-empty-hint')?.remove();
   msgs.appendChild(msg);
   msgs.scrollTop = msgs.scrollHeight;
   return msg;
+}
+
+// Compute which chatHistory index a clicked user-message DOM element
+// corresponds to. We can't trust raw DOM position because the trailing
+// streaming placeholder is in DOM but not yet in chatHistory.
+function indexOfUserMsg(msgEl, history) {
+  const parent = msgEl.parentElement;
+  if (!parent) return -1;
+  let countInDom = -1;
+  for (const el of parent.children) {
+    if (el.classList.contains('user')) countInDom++;
+    if (el === msgEl) break;
+  }
+  if (countInDom < 0) return -1;
+  let seen = 0;
+  for (let i = 0; i < history.length; i++) {
+    if (history[i].role !== 'user') continue;
+    if (seen === countInDom) return i;
+    seen++;
+  }
+  return -1;
+}
+
+// Swap a user message's content for a textarea + Save/Cancel.
+// onSubmit gets the new text; onCancel just restores.
+function enterMsgEditMode(msgEl, originalText, onSubmit) {
+  if (msgEl.classList.contains('editing')) return;
+  msgEl.classList.add('editing');
+  const body = msgEl.querySelector('.sg-chat-msg-body') || msgEl;
+  const prev = body.textContent;
+  body.innerHTML = '';
+  const ta = document.createElement('textarea');
+  ta.className = 'sg-chat-msg-edit-area';
+  ta.value = originalText;
+  ta.rows = Math.min(8, Math.max(2, originalText.split('\n').length));
+  const actions = document.createElement('div');
+  actions.className = 'sg-chat-msg-edit-actions';
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'sg-chat-msg-edit-save primary';
+  save.textContent = 'Save & re-run';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'sg-chat-msg-edit-cancel';
+  cancel.textContent = 'Cancel';
+  actions.appendChild(save);
+  actions.appendChild(cancel);
+  body.appendChild(ta);
+  body.appendChild(actions);
+  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 20);
+  const finish = () => { msgEl.classList.remove('editing'); };
+  cancel.addEventListener('click', () => {
+    finish();
+    body.innerHTML = '';
+    body.textContent = prev;
+  });
+  save.addEventListener('click', () => {
+    const v = ta.value.trim();
+    if (!v) return cancel.click();
+    finish();
+    onSubmit(v);
+  });
+  ta.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); cancel.click(); }
+    if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); save.click(); }
+  });
+}
+
+// Truncate the conversation at the edited user message and re-run the new
+// text — the Claude.app-style "edit a past message" flow.
+async function editChatMsgAndRerun(msgEl) {
+  if (!chatPanel) return;
+  const idx = indexOfUserMsg(msgEl, chatHistory);
+  if (idx < 0) return;
+  const original = chatHistory[idx]?.content || '';
+  enterMsgEditMode(msgEl, original, async (newText) => {
+    const preHistory = chatHistory.slice(0, idx);
+    try {
+      if (chatMode === 'tutor') {
+        await fetch(`/api/tutor/${encodeURIComponent(currentTrack)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: preHistory }),
+        });
+      } else if (chatMode === 'btw' && threadId) {
+        // For unsaved btw threads (no file yet) the 404 is fine — we just
+        // need the in-memory state to be truncated.
+        await fetch(`/api/thread/${encodeURIComponent(threadId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: preHistory }),
+        }).catch(() => {});
+      }
+    } catch (e) {
+      setStatus('edit failed: ' + e.message);
+      return;
+    }
+    // Drop any in-flight stream for this conversation — its target placeholder
+    // is about to be wiped, and the file underneath it has just been rewritten.
+    if (currentPanelKey && inflightStreams.has(currentPanelKey)) {
+      const e = inflightStreams.get(currentPanelKey);
+      e.done = true;
+      inflightStreams.delete(currentPanelKey);
+    }
+    chatHistory = preHistory;
+    const msgs = chatPanel.querySelector('.sg-chat-messages');
+    msgs.innerHTML = '';
+    for (const m of chatHistory) appendChatMessage(m.role, m.content);
+    if (chatMode === 'tutor') {
+      sendTutorTurn(newText);
+    } else {
+      const input = chatPanel.querySelector('[name="q"]');
+      input.value = newText;
+      chatPanel.querySelector('.sg-chat-form').dispatchEvent(
+        new Event('submit', { cancelable: true, bubbles: true }),
+      );
+    }
+  });
 }
 
 function setChatSaveEnabled() {
@@ -1829,7 +2680,41 @@ async function onSaveChat() {
 }
 
 document.getElementById('btn-tutor').addEventListener('click', () => {
-  openTutorPanel();
+  // Toggle: if the tutor panel for this track is already showing, the
+  // second click closes it.
+  const isOpenForThisTrack =
+    chatPanel?.classList.contains('show') &&
+    currentPanelKey === `tutor:${currentTrack}`;
+  if (isOpenForThisTrack) closeChatPanel();
+  else openTutorPanel();
+});
+
+// Outline popover toggle — only shown at narrow viewports (≤ 1469px).
+// Mirrors Claude docs' "Toggle table of contents" affordance.
+const outlineToggleBtn = document.getElementById('outline-toggle');
+function setOutlinePopOpen(open) {
+  document.body.classList.toggle('outline-pop-open', open);
+  outlineToggleBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+outlineToggleBtn?.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  setOutlinePopOpen(!document.body.classList.contains('outline-pop-open'));
+});
+// Close when clicking outside the rail (but not on the toggle itself)
+document.addEventListener('click', (ev) => {
+  if (!document.body.classList.contains('outline-pop-open')) return;
+  if (ev.target.closest('#outline-rail') || ev.target.closest('#outline-toggle')) return;
+  setOutlinePopOpen(false);
+});
+// Close on Esc
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && document.body.classList.contains('outline-pop-open')) {
+    setOutlinePopOpen(false);
+  }
+});
+// Close when an outline link is clicked (the user jumped — popover's done its job)
+document.getElementById('outline-rail')?.addEventListener('click', (ev) => {
+  if (ev.target.closest('a[data-action="jump-section"]')) setOutlinePopOpen(false);
 });
 
 btnRecap.addEventListener('click', async () => {
@@ -1884,12 +2769,24 @@ const viewReader = document.getElementById('view-reader');
 const trackGrid = document.getElementById('track-grid');
 const newTrackDialog = document.getElementById('new-track-dialog');
 const newTrackForm = document.getElementById('new-track-form');
+const editTrackDialog = document.getElementById('edit-track-dialog');
+const editTrackForm = document.getElementById('edit-track-form');
 
 function parseRoute() {
   const hash = location.hash || '#/';
-  // #/t/<slug>/intake → intake; #/t/<slug>/ → reader
+  // #/t/<slug>/intake → intake
   const intake = hash.match(/^#\/t\/([^/]+)\/intake\/?$/);
   if (intake) return { name: 'intake', slug: decodeURIComponent(intake[1]) };
+  // #/t/<slug>/lesson/<lessonSlug> → reader pinned to a specific lesson
+  const lessonDeep = hash.match(/^#\/t\/([^/]+)\/lesson\/([^/?#]+)\/?$/);
+  if (lessonDeep) {
+    return {
+      name: 'reader',
+      slug: decodeURIComponent(lessonDeep[1]),
+      lesson: decodeURIComponent(lessonDeep[2]),
+    };
+  }
+  // #/t/<slug>/ → reader at default lesson
   const reader = hash.match(/^#\/t\/([^/]+)\/?/);
   if (reader) return { name: 'reader', slug: decodeURIComponent(reader[1]) };
   return { name: 'home' };
@@ -1923,14 +2820,23 @@ async function route() {
       if (!lessons.length) {
         const cur = await fetch(`/api/tracks/${encodeURIComponent(r.slug)}/curriculum`).then((x) => x.json()).catch(() => null);
         if (!cur?.ok) {
+          // Important: reset currentTrack so that if the user comes back
+          // (e.g. via "skip intake" → #/t/<slug>/) the reader properly
+          // re-initialises instead of taking the same-slug short-circuit
+          // and showing stale lesson content from another track.
+          currentTrack = null;
           location.hash = `#/t/${encodeURIComponent(r.slug)}/intake`;
           return;
         }
       }
       const trackProgress = _progress.tracks?.[r.slug];
-      const target = trackProgress?.current && lessons.includes(trackProgress.current)
-        ? trackProgress.current
-        : lessons[0];
+      // If the URL pins a specific lesson, honor it (unknown slugs fall
+      // back to progress.current / first lesson).
+      const target = (r.lesson && lessons.includes(r.lesson))
+        ? r.lesson
+        : trackProgress?.current && lessons.includes(trackProgress.current)
+          ? trackProgress.current
+          : lessons[0];
       if (target) await loadLesson(target);
       else {
         currentSlug = '';
@@ -1941,6 +2847,9 @@ async function route() {
         loadThreads();
         sidebarOutline.innerHTML = '<li class="hint">(no lesson)</li>';
       }
+    } else if (r.lesson && r.lesson !== currentSlug) {
+      // Same track, different lesson named in URL — switch without re-init.
+      await loadLesson(r.lesson);
     }
   } else {
     viewReader.hidden = true;
@@ -1960,23 +2869,34 @@ const intakeMessagesEl = () => document.getElementById('intake-messages');
 async function enterIntake(slug) {
   intakeTrack = slug;
   intakeHistory = [];
-  document.getElementById('intake-messages').innerHTML = '';
+  const msgsEl = document.getElementById('intake-messages');
+  msgsEl.innerHTML = '';
   document.getElementById('intake-input').value = '';
+  // Show the slug immediately so the user doesn't see "planning…" flash
+  // while the /api/tracks fetch resolves. Upgraded to title once it lands.
+  document.getElementById('intake-track-name').textContent = slug;
   try {
     const meta = await fetch(`/api/tracks/${encodeURIComponent(slug)}`).then((r) => r.json());
     document.getElementById('intake-track-name').textContent =
       (meta?.track?.emoji ? meta.track.emoji + ' ' : '') + (meta?.track?.title || slug);
-  } catch {
-    document.getElementById('intake-track-name').textContent = slug;
-  }
-  // If curriculum already exists, just show a note + jump-to-reader button
+  } catch {}
+  // Restore the running conversation with this track's tutor (intake turns
+  // are persisted into tutor-chat.jsonl, so when the user returns to the
+  // intake page they pick up exactly where they left off).
+  try {
+    const r = await fetch(`/api/tutor/${encodeURIComponent(slug)}`).then((r) => r.json());
+    const past = (r?.history || []).filter((m) => m.role === 'user' || m.role === 'assistant');
+    intakeHistory = past.map((m) => ({ role: m.role, content: m.content }));
+    for (const m of past) appendIntakeMsg(m.role, m.content);
+  } catch {}
+  // If curriculum already exists, drop a small note at the bottom so the
+  // learner knows they can jump straight to reading.
   const cur = await fetch(`/api/tracks/${encodeURIComponent(slug)}/curriculum`).then((r) => r.json()).catch(() => null);
   if (cur?.ok) {
-    const msgs = document.getElementById('intake-messages');
-    msgs.innerHTML = `<div class="intake-msg assistant">
-      <p>This course already has a curriculum. Continue chatting to refine it, or jump straight to reading.</p>
-      <p><a href="#/t/${encodeURIComponent(slug)}/">→ Open reader</a></p>
-    </div>`;
+    const note = document.createElement('div');
+    note.className = 'intake-msg assistant intake-curriculum-note';
+    note.innerHTML = `<p>This course already has a curriculum — keep chatting to refine it, or <a href="#/t/${encodeURIComponent(slug)}/">→ open reader</a>.</p>`;
+    msgsEl.appendChild(note);
   }
   // Surface any uploaded materials for this track
   loadMaterials(
@@ -1988,6 +2908,14 @@ async function enterIntake(slug) {
   setTimeout(() => document.getElementById('intake-input').focus(), 50);
 }
 
+let intakeStreamController = null;
+function setIntakeSubmitMode(mode) {
+  const btn = document.querySelector('#intake-form button[type="submit"]');
+  if (!btn) return;
+  btn.dataset.mode = mode;
+  btn.textContent = mode === 'stop' ? 'Stop' : 'Send';
+}
+
 async function sendIntakeTurn(userMessage, finalize) {
   if (userMessage) {
     intakeHistory.push({ role: 'user', content: userMessage });
@@ -1996,10 +2924,12 @@ async function sendIntakeTurn(userMessage, finalize) {
   const placeholder = appendIntakeMsg('assistant', '…');
   placeholder.classList.add('streaming');
   setStatus(finalize ? 'finalizing curriculum…' : 'intake (thinking…)');
+  setIntakeSubmitMode('stop');
 
   const historyBefore = intakeHistory.filter((m) => m.role === 'assistant' || (userMessage && m.content !== userMessage));
   // Send history WITHOUT the just-pushed user message (server adds it via user_message)
   const histPayload = userMessage ? intakeHistory.slice(0, -1) : intakeHistory.slice();
+  intakeStreamController = new AbortController();
 
   try {
     const resp = await fetch('/api/intake', {
@@ -2011,6 +2941,7 @@ async function sendIntakeTurn(userMessage, finalize) {
         history: histPayload,
         action: finalize ? 'finalize' : 'ask',
       }),
+      signal: intakeStreamController.signal,
     });
     if (!resp.ok || !resp.body) {
       const txt = await resp.text().catch(() => '');
@@ -2058,17 +2989,40 @@ async function sendIntakeTurn(userMessage, finalize) {
       setTimeout(() => { location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`; }, 1400);
     }
   } catch (e) {
-    placeholder.textContent = '✗ ' + e.message;
-    placeholder.classList.add('error', 'streaming');
+    const aborted = e?.name === 'AbortError';
     placeholder.classList.remove('streaming');
-    setStatus('intake error: ' + e.message);
+    if (aborted) {
+      if (!placeholder.textContent) placeholder.textContent = '(interrupted)';
+      placeholder.classList.add('interrupted');
+      setStatus('intake interrupted');
+    } else {
+      placeholder.textContent = '✗ ' + e.message;
+      placeholder.classList.add('error');
+      setStatus('intake error: ' + e.message);
+    }
+  } finally {
+    intakeStreamController = null;
+    setIntakeSubmitMode('ask');
   }
 }
 
 function appendIntakeMsg(role, content) {
   const msg = document.createElement('div');
   msg.className = `intake-msg ${role}`;
-  if (role === 'assistant' && content !== '…') {
+  if (role === 'user') {
+    const body = document.createElement('div');
+    body.className = 'sg-chat-msg-body';
+    body.textContent = content;
+    msg.appendChild(body);
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'sg-chat-msg-edit-btn';
+    editBtn.dataset.action = 'edit-intake-msg';
+    editBtn.title = 'edit this message and re-run from here';
+    editBtn.setAttribute('aria-label', 'edit');
+    editBtn.textContent = '✎';
+    msg.appendChild(editBtn);
+  } else if (content !== '…') {
     msg.innerHTML = md.render(content, {});
   } else {
     msg.textContent = content;
@@ -2077,13 +3031,91 @@ function appendIntakeMsg(role, content) {
   return msg;
 }
 
+async function editIntakeMsgAndRerun(msgEl) {
+  const idx = indexOfUserMsg(msgEl, intakeHistory);
+  if (idx < 0) return;
+  const original = intakeHistory[idx]?.content || '';
+  enterMsgEditMode(msgEl, original, async (newText) => {
+    const preHistory = intakeHistory.slice(0, idx);
+    try {
+      await fetch(`/api/tutor/${encodeURIComponent(intakeTrack)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history: preHistory }),
+      });
+    } catch (e) {
+      setStatus('edit failed: ' + e.message);
+      return;
+    }
+    intakeHistory = preHistory;
+    const msgs = document.getElementById('intake-messages');
+    // Strip the running curriculum-note too — it'll be re-appended by the
+    // next enterIntake if relevant.
+    msgs.innerHTML = '';
+    for (const m of intakeHistory) appendIntakeMsg(m.role, m.content);
+    sendIntakeTurn(newText, false);
+  });
+}
+
 document.getElementById('intake-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
+  const btn = ev.target.querySelector('button[type="submit"]');
+  if (btn?.dataset.mode === 'stop') {
+    if (intakeStreamController) { try { intakeStreamController.abort(); } catch {} }
+    return;
+  }
   const input = document.getElementById('intake-input');
   const val = input.value.trim();
   if (!val) return;
+  pushIntakeInputHistory(val);
   input.value = '';
+  autosizeTextarea(input);
   sendIntakeTurn(val, false);
+});
+
+// Intake input — Esc aborts an in-flight intake turn; ↑/↓ cycle history
+// (only when cursor is at start, so multi-line editing isn't hijacked).
+const intakeInputEl = document.getElementById('intake-input');
+intakeInputEl?.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') {
+    if (intakeStreamController) {
+      ev.preventDefault();
+      try { intakeStreamController.abort(); } catch {}
+    }
+    return;
+  }
+  // Enter submits, Shift+Enter inserts a newline (Claude.app-style).
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
+    ev.preventDefault();
+    const form = document.getElementById('intake-form');
+    if (typeof form.requestSubmit === 'function') form.requestSubmit();
+    else form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    return;
+  }
+  if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+  // Only trigger when caret is at the very start (Up) or very end (Down)
+  // so the user can still navigate inside multi-line text.
+  const atStart = intakeInputEl.selectionStart === 0 && intakeInputEl.selectionEnd === 0;
+  const atEnd = intakeInputEl.selectionStart === intakeInputEl.value.length;
+  if (ev.key === 'ArrowUp' && !atStart) return;
+  if (ev.key === 'ArrowDown' && !atEnd) return;
+  const dir = ev.key === 'ArrowUp' ? 'up' : 'down';
+  const ref = { value: intakeInputHistoryIdx };
+  const handled = navigateInputHistory(intakeInputEl, intakeInputHistory, ref, dir);
+  intakeInputHistoryIdx = ref.value;
+  if (handled) ev.preventDefault();
+});
+intakeInputEl?.addEventListener('input', () => {
+  intakeInputHistoryIdx = -1;
+  autosizeTextarea(intakeInputEl);
+});
+
+// Edit-button delegate for past intake user messages.
+document.getElementById('intake-messages').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-action="edit-intake-msg"]');
+  if (!btn) return;
+  const msg = btn.closest('.intake-msg.user');
+  if (msg) editIntakeMsgAndRerun(msg);
 });
 
 // "Plan curriculum →" and "skip intake" buttons
@@ -2098,7 +3130,13 @@ document.addEventListener('click', (ev) => {
   } else if (btn.dataset.action === 'skip-intake') {
     ev.preventDefault();
     if (!confirm('Skip the intake? You can come back to it later, but lesson generation will be less personalized.')) return;
-    location.hash = `#/t/${encodeURIComponent(intakeTrack)}/`;
+    // Source the slug from the URL, not the global — the global can drift
+    // out of sync if enterIntake hasn't yet run, sending the user into a
+    // *different* track's reader. Going home is also safer than going to
+    // the track's reader, since a track with no curriculum + no lessons
+    // would just redirect back to intake (an infinite loop the user
+    // already said no to).
+    location.hash = '#/';
   }
 });
 
@@ -2125,6 +3163,7 @@ function trackCardHtml(t) {
   const hasDesc = (t.description || '').trim().length > 0;
   return `<a class="track-card ${t.is_current_track ? 'current' : ''}" href="#/t/${encodeURIComponent(t.slug)}/" data-action="open-track" data-slug="${escapeHtml(t.slug)}">
     <span class="track-card-actions">
+      <button class="track-edit" data-action="edit-track" data-slug="${escapeHtml(t.slug)}" title="edit title / description / cover" aria-label="edit">✎</button>
       <button class="track-export" data-action="export-track" data-slug="${escapeHtml(t.slug)}" title="download course as .tgz" aria-label="export">⬇</button>
       <button class="track-delete" data-action="delete-track" data-slug="${escapeHtml(t.slug)}" title="delete course" aria-label="delete">×</button>
     </span>
@@ -2146,6 +3185,13 @@ document.addEventListener('click', async (ev) => {
   } else if (action === 'close-dialog') {
     ev.preventDefault();
     newTrackDialog.close();
+  } else if (action === 'close-edit-dialog') {
+    ev.preventDefault();
+    editTrackDialog.close();
+  } else if (action === 'edit-track') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openEditTrack(t.dataset.slug);
   } else if (action === 'delete-track') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -2224,6 +3270,49 @@ newTrackForm.addEventListener('submit', async (ev) => {
     location.hash = `#/t/${encodeURIComponent(r.track.slug)}/intake`;
   } catch (e) {
     alert('create failed: ' + e.message);
+  }
+});
+
+async function openEditTrack(slug) {
+  if (!slug) return;
+  try {
+    const r = await fetch(`/api/tracks/${encodeURIComponent(slug)}`).then((r) => r.json());
+    if (!r.ok) throw new Error(r.error || 'not found');
+    const t = r.track;
+    editTrackForm.dataset.slug = slug;
+    document.getElementById('et-emoji').value = t.emoji || '📘';
+    document.getElementById('et-title').value = t.title || '';
+    document.getElementById('et-desc').value = t.description || '';
+    document.getElementById('et-slug-hint').textContent =
+      `slug: ${slug} (locked — won't rename folder or URLs)`;
+    editTrackDialog.showModal();
+    setTimeout(() => document.getElementById('et-title').focus(), 30);
+  } catch (e) {
+    alert('could not load course: ' + e.message);
+  }
+}
+
+editTrackForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const slug = editTrackForm.dataset.slug;
+  if (!slug) return;
+  const fd = new FormData(editTrackForm);
+  try {
+    const r = await fetch(`/api/tracks/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: (fd.get('title') || '').toString().trim(),
+        description: (fd.get('description') || '').toString().trim(),
+        emoji: (fd.get('emoji') || '').toString().trim() || '📘',
+      }),
+    }).then((r) => r.json());
+    if (!r.ok) throw new Error(r.error || 'update failed');
+    editTrackDialog.close();
+    renderHome();
+    setStatus(`updated "${r.track.title}"`);
+  } catch (e) {
+    alert('update failed: ' + e.message);
   }
 });
 
@@ -2352,10 +3441,13 @@ document.addEventListener('keydown', (ev) => {
     cmdDialog.close();
   } else if ((ev.metaKey || ev.ctrlKey) && ev.key === '/') {
     // ⌘/ — quick selection-to-btw shortcut (if anything selected in lesson)
-    const sel = window.getSelection()?.toString().trim();
-    if (sel && sel.length > 3 && view.contains(window.getSelection()?.anchorNode)) {
-      ev.preventDefault();
-      openChatPanel(sel);
+    const winSel = window.getSelection();
+    if (winSel && view.contains(winSel.anchorNode)) {
+      const sel = selectionToTextWithLatex(winSel);
+      if (sel && sel.length > 3) {
+        ev.preventDefault();
+        openChatPanel(sel);
+      }
     }
   }
 });

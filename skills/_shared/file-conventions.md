@@ -20,6 +20,7 @@ $STUDYGROUND_DIR/
 │       ├── materials/           # user-uploaded reference materials; Claude reads
 │       │   ├── *.md
 │       │   ├── *.txt
+│       │   ├── *.pdf             # read via Read tool (pass `pages: "1-N"` for >10 pages)
 │       │   └── ...
 │       └── threads/<id>.json    # persisted side-chat conversations (read-only for Claude)
 ├── memory/

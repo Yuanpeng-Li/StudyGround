@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 
 const SCAFFOLD_FILES = ['main.py', 'test_main.py', 'README.md'];
 
@@ -94,10 +95,41 @@ export async function scaffoldExercise({
   }
 
   const mainPath = join(exDir, 'main.py');
+  // Best-effort: ask the `code` CLI to reuse an existing VSCode window
+  // instead of spawning a new one each time. If `code` isn't on PATH or the
+  // call fails, fall back to the protocol URI (handled client-side).
+  const opened = await openInVSCode(mainPath);
   return {
     abs_path: mainPath,
     dir: exDir,
     created,
     vscode_uri: vscodeUriFor(mainPath),
+    opened_via_cli: opened,
   };
+}
+
+function openInVSCode(absPath) {
+  return new Promise((resolve) => {
+    // `code --reuse-window <path>` opens the file in the most recently
+    // focused existing VSCode window (creating one if none exists). On WSL
+    // the `code` shim transparently invokes the Windows VSCode and converts
+    // the path; on Linux/macOS it talks to the local installation.
+    let child;
+    try {
+      child = spawn('code', ['--reuse-window', absPath], {
+        stdio: 'ignore',
+        detached: true,
+      });
+    } catch {
+      return resolve(false);
+    }
+    let settled = false;
+    const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+    child.on('error', () => done(false));
+    // The CLI exits quickly (it's just an IPC kick) — give it 1.5s, then
+    // assume success and stop blocking the request.
+    child.on('exit', (code) => done(code === 0));
+    setTimeout(() => done(true), 1500);
+    try { child.unref(); } catch {}
+  });
 }

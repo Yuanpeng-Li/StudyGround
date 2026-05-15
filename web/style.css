@@ -25,12 +25,16 @@
   --green: #5C7A5C;
   --green-soft: #E5EDE5;
 
-  --border: #E5E0D3;
-  --border-strong: #C4BFB1;
+  /* Borders are translucent-on-dark so the same token looks right on any
+     background tint (page cream, accent-faint, bg-sunken, white card).
+     Same trick Claude docs uses; replaces a stack of solid hex borders
+     that each had to be hand-tuned per surface. */
+  --border: rgba(31, 30, 29, 0.15);
+  --border-strong: rgba(31, 30, 29, 0.3);
   --border-dark: #4A4540;
 
-  --header-bg: rgba(250, 249, 245, 0.85);
-  --footer-bg: rgba(250, 249, 245, 0.92);
+  --header-bg: rgba(250, 249, 245, 0.96);
+  --footer-bg: rgba(250, 249, 245, 0.97);
 
   --radius: 8px;
   --radius-lg: 12px;
@@ -72,12 +76,12 @@
   --green: #95B595;
   --green-soft: #1F2A1F;
 
-  --border: #38352F;
-  --border-strong: #4A4640;
+  --border: rgba(232, 227, 215, 0.12);
+  --border-strong: rgba(232, 227, 215, 0.22);
   --border-dark: #4A4540;
 
-  --header-bg: rgba(28, 27, 25, 0.85);
-  --footer-bg: rgba(28, 27, 25, 0.92);
+  --header-bg: rgba(28, 27, 25, 0.96);
+  --footer-bg: rgba(28, 27, 25, 0.97);
 }
 :root[data-theme='dark'] main code {
   color: var(--accent-deep);
@@ -89,9 +93,20 @@
   color: var(--text-strong);
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
-:root[data-theme='dark'] main pre { background: var(--bg-dark); }
+:root[data-theme='dark'] main pre {
+  --sg-pre-bg: var(--bg-dark);
+  background-color: var(--bg-dark);
+  color: var(--text-on-dark);
+  border-color: var(--border-dark);
+}
+:root[data-theme='dark'] main pre::-webkit-scrollbar-thumb {
+  background: var(--bg-dark-soft);
+}
+:root[data-theme='dark'] main pre::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
 :root[data-theme='dark'] .katex { color: var(--text-strong); }
-:root[data-theme='dark'] details > summary { color: var(--purple); }
+:root[data-theme='dark'] details > summary { color: var(--accent-deep); }
 
 /* ---------- dark-mode tweaks for coral / chat UI ---------- */
 /* The default --accent / --accent-deep (#E0815F → #F49872) are both light corals
@@ -110,39 +125,23 @@
           drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
 }
 
-/* Tutor button: was --accent-faint (#2E1F18) which is almost invisible. */
-:root[data-theme='dark'] #btn-tutor {
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg-soft));
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--accent-deep);
-}
-:root[data-theme='dark'] #btn-tutor:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 30%, var(--bg-soft));
-  border-color: var(--accent);
-}
-
-/* btw "highlighted from lesson" box + quote chip — purple-soft is too dark
-   in dark mode (#2A2335 against a #1C1B19 panel). Brighten + raise contrast. */
+/* Ask-flow accents — selection chip, quote chip, panel head, user bubble.
+   All on the coral accent so the "ask Claude about this" path reads as one
+   continuous palette (floating sel-toolbar → chat panel → reply). */
 :root[data-theme='dark'] .sg-chat-selection {
-  background: color-mix(in srgb, var(--purple) 14%, var(--bg-soft));
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-soft));
   color: var(--text);
 }
 :root[data-theme='dark'] .sg-chat-form .sg-chat-quote-chip {
-  background: color-mix(in srgb, var(--purple) 18%, var(--bg-soft));
-  color: var(--text);
-  border-left-color: var(--purple);
-}
-:root[data-theme='dark'] .sg-chat-panel.tutor-mode .sg-chat-form .sg-chat-quote-chip {
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-soft));
+  color: var(--text);
   border-left-color: var(--accent);
 }
-
-/* Tutor-mode chat head + user-bubble accents — make them readable. */
-:root[data-theme='dark'] .sg-chat-panel.tutor-mode .sg-chat-head {
+:root[data-theme='dark'] .sg-chat-head {
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-soft));
   border-bottom-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
-:root[data-theme='dark'] .sg-chat-panel.tutor-mode .sg-chat-msg.user {
+:root[data-theme='dark'] .sg-chat-msg.user {
   background: color-mix(in srgb, var(--accent) 22%, var(--bg-soft));
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
@@ -167,6 +166,14 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
+/* When the side chat panel is open, push the whole document inward by the
+   panel's current width so the panel no longer overlays main content.
+   `--sg-chat-width` is set by the resize handle (defaults to 440px). */
+body.sg-chat-open {
+  padding-right: var(--sg-chat-width, 440px);
+  transition: padding-right 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 .view[hidden] { display: none; }
 
 /* ---------- home view ---------- */
@@ -186,8 +193,9 @@ html, body {
 .home-header .brand {
   margin: 0;
   font-family: var(--font-serif);
-  font-size: 1.1rem;
+  font-size: 1.35rem;
   font-weight: 600;
+  letter-spacing: 0.005em;
   color: var(--text-strong);
 }
 .home-actions {
@@ -277,6 +285,13 @@ html, body {
 .track-card.current {
   border-color: var(--accent-soft);
 }
+/* Same specificity as `.track-card:hover`, but declared later — so the
+   recent card's hover border lifts to `--accent` just like every other
+   card's does. */
+.track-card.current:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md);
+}
 .track-card.current::after {
   content: 'recent';
   position: absolute;
@@ -327,19 +342,21 @@ html, body {
 }
 .track-card:hover .track-card-actions { opacity: 1; }
 .track-card .track-delete,
-.track-card .track-export {
+.track-card .track-export,
+.track-card .track-edit {
   width: 26px;
   height: 26px;
   border-radius: 50%;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-faint);
-  font-size: 0.95rem;
+  color: var(--text-muted);
+  font-size: 1rem;
   line-height: 1;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
 }
 .track-card .track-delete:hover {
   background: var(--bg-sunken);
@@ -347,6 +364,11 @@ html, body {
   border-color: var(--border);
 }
 .track-card .track-export:hover {
+  background: var(--bg-sunken);
+  color: var(--accent-deep);
+  border-color: var(--border);
+}
+.track-card .track-edit:hover {
   background: var(--bg-sunken);
   color: var(--accent-deep);
   border-color: var(--border);
@@ -370,8 +392,9 @@ html, body {
 /* ---------- intake view ---------- */
 .brand-link {
   font-family: var(--font-serif);
-  font-size: 1.1rem;
+  font-size: 1.35rem;
   font-weight: 600;
+  letter-spacing: 0.005em;
   color: var(--text-strong);
   text-decoration: none;
 }
@@ -412,7 +435,7 @@ html, body {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
   background: var(--bg-card);
-  padding: 0.75rem 1rem 0.9rem;
+  padding: 0.55rem 0.9rem 0.6rem;
 }
 .intake-materials-head {
   display: flex;
@@ -449,18 +472,23 @@ html, body {
 }
 .intake-materials-list {
   list-style: none;
-  margin: 0.65rem 0 0;
+  margin: 0.4rem 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+}
+.intake-materials-list:has(> li.hint:only-child) {
+  /* Empty state: drop the list margin entirely so the hint hugs the head bar */
+  margin: 0;
+  display: none;
 }
 .intake-materials-list li {
   padding: 0;
 }
 .intake-materials-list .hint {
   color: var(--text-faint);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-style: italic;
 }
 .intake-materials-list .material-item {
@@ -487,7 +515,7 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  min-height: 200px;
+  min-height: 60px;
 }
 .intake-msg {
   font-size: 0.97rem;
@@ -506,6 +534,7 @@ html, body {
 .intake-msg.assistant > :first-child { margin-top: 0; }
 .intake-msg.assistant > :last-child { margin-bottom: 0; }
 .intake-msg.user {
+  position: relative;
   align-self: flex-end;
   max-width: 80%;
   background: var(--accent-faint);
@@ -559,14 +588,17 @@ html, body {
 }
 #btn-finalize {
   margin-left: auto;
-  border-color: var(--accent);
-  color: var(--accent-deep);
+  /* Ghost / secondary look — Send (.primary) is the loud one. Bring this
+     in only when the user is ready to finalize. */
+  border-color: var(--border-strong);
+  color: var(--text-muted);
   padding: 0.5rem 1.1rem;
   border-radius: 999px;
 }
 #btn-finalize:hover:not(:disabled) {
-  background: var(--accent);
-  color: #FFF;
+  border-color: var(--accent);
+  color: var(--accent-deep);
+  background: var(--accent-faint);
 }
 .intake-actions button.link {
   background: transparent;
@@ -634,6 +666,12 @@ dialog.sg-dialog h3 {
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.4rem;
+}
+.dlg-hint {
+  margin: 0 0 0.7rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-faint);
 }
 
 /* ---------- command palette ---------- */
@@ -716,28 +754,123 @@ dialog.cmd-palette-dialog {
 /* ---------- app shell: sidebar + content ---------- */
 .app {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 256px minmax(0, 1fr);
   min-height: 100vh;
   transition: grid-template-columns 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .app.sidebar-collapsed {
-  grid-template-columns: 40px 1fr;
+  grid-template-columns: 40px minmax(0, 1fr);
+}
+/* Content area sizing matches platform.claude.com/docs: prose 896px,
+   72px (4.5rem) gap, TOC 288px. The unit is centered horizontally in
+   the space remaining after the sidebar, so wider viewports just grow
+   the symmetric margins on both sides instead of pushing the prose
+   left or right. */
+.content-body {
+  display: grid;
+  /* Wider than Claude's 288 so Chinese titles don't wrap. Measured
+     longest title in current tracks at ~280px content; 320 gives a buffer. */
+  grid-template-columns: minmax(0, 896px) 320px;
+  column-gap: 4.5rem;
+  justify-content: center;
+  padding: 0 1.5rem;
+  align-items: start;
+}
+/* Below the point where the inline TOC would crash into the prose
+   (sidebar 256 + padding 32 + prose 896 + gap 72 + rail 320 = 1576),
+   hide the inline rail and surface a toggle (☰) in the lesson header
+   that opens a fixed-position popover with the outline. */
+@media (max-width: 1575px) {
+  .content-body {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0;
+  }
+  #outline-rail { display: none; }
+  .outline-toggle { display: inline-flex; }
+}
+/* Open state: surface the rail as a floating panel, same width as
+   the inline rail so titles don't wrap there either. */
+body.outline-pop-open #outline-rail {
+  display: block;
+  position: fixed;
+  top: 4.5rem;
+  right: 1.5rem;
+  width: 320px;
+  max-height: 60vh;
+  height: auto;
+  overflow-y: auto;
+  z-index: 50;
+  padding: 0.6rem 0 0.8rem 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+body.outline-pop-open #outline-rail::before {
+  content: 'ON THIS PAGE';
+  display: block;
+  padding: 0.4rem 1rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+/* Computed in JS (see updateOutlineLayout) when sidebar + chat panel
+   leave less than ~1576px for the prose + rail. Forces narrow-mode no
+   matter the viewport size — the chat panel is user-resizable, so
+   static media queries can't reliably catch the overlap. */
+body.outline-no-room .content-body {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+}
+body.outline-no-room #outline-rail { display: none; }
+body.outline-no-room .outline-toggle { display: inline-flex; }
+/* If the popover is opened while the chat panel is open, slide it left
+   so it parks beside the chat panel instead of under it. */
+body.sg-chat-open.outline-pop-open #outline-rail {
+  display: block;
+  right: calc(var(--sg-chat-width, 440px) + 1.5rem);
+}
+#outline-rail {
+  /* Pin to the SAME y the rail naturally sits at (just below the sticky
+     header). If sticky-top != natural-top, the rail jumps a few px when
+     scroll first triggers stickiness — visible enough to look broken. */
+  --sg-header-h: 62px;
+  position: sticky;
+  top: var(--sg-header-h);
+  align-self: start;
+  height: calc(100vh - var(--sg-header-h));
+  overflow-y: auto;
+  padding: 2rem 0 4rem 0;
+  background: transparent;
+}
+#outline-rail .sidebar-section { margin: 0; gap: 0; }
+#outline-rail .sidebar-section-label {
+  /* Claude-doc-style outline doesn't carry a chunky "OUTLINE" header —
+     the rail's own border is enough. Keep it for a11y but de-emphasise. */
+  display: none;
 }
 .app.sidebar-collapsed #sidebar {
   padding: 0.55rem 0.35rem;
   overflow: hidden;
 }
-.app.sidebar-collapsed #sidebar > *:not(.sidebar-toggle) {
+.app.sidebar-collapsed #sidebar > *:not(.sidebar-head) {
   display: none;
 }
-.app.sidebar-collapsed #sidebar .sidebar-toggle {
-  position: static;
-  margin: 0 auto;
+.app.sidebar-collapsed #sidebar .sidebar-head {
+  justify-content: center;
+}
+.app.sidebar-collapsed #sidebar .sidebar-brand {
+  display: none;
+}
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 .sidebar-toggle {
-  position: absolute;
-  top: 0.55rem;
-  right: 0.55rem;
+  flex: 0 0 auto;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -748,7 +881,6 @@ dialog.cmd-palette-dialog {
   border: 1px solid var(--border);
   color: var(--text-muted);
   cursor: pointer;
-  z-index: 5;
   transition: background 120ms, transform 180ms;
 }
 .sidebar-toggle:hover {
@@ -772,36 +904,69 @@ dialog.cmd-palette-dialog {
   overflow-y: auto;
   border-right: 1px solid var(--border);
   background: var(--bg-soft);
-  padding: 1.4rem 0.9rem 5rem;
+  /* Top-padding mirrors .home-header's 1.1rem so the brand sits at the
+     same y as on /home and /intake. Side-padding is tuned so the brand
+     glyph also lands at x ≈ 32px to match. */
+  padding: 1.1rem 1rem 5rem;
   display: flex;
   flex-direction: column;
   gap: 1.4rem;
 }
-.sidebar-back {
-  display: inline-flex;
+.sidebar-search {
+  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.6rem;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.42rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
   color: var(--text-muted);
-  text-decoration: none;
-  border-radius: 6px;
-  margin-bottom: -0.5rem;
-  width: fit-content;
+  font-family: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 90ms ease, border-color 90ms ease, color 90ms ease;
 }
-.sidebar-back:hover {
-  color: var(--text-strong);
-  background: var(--bg-sunken);
+.sidebar-search:hover:not(:disabled) {
+  background: var(--bg-card);
+  border-color: var(--accent-soft);
+  color: var(--text);
 }
+.sidebar-search-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--text-faint);
+}
+.sidebar-search-label { flex: 1; }
+.sidebar-search-kbd {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  padding: 0.08rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-soft);
+}
+.app.sidebar-collapsed .sidebar-search { display: none; }
+/* Pin materials to the bottom of the sidebar (lessons + threads sit
+   above it, materials drop into the natural empty space below). */
+.sidebar-section[data-section="materials"] { margin-top: auto; }
 .sidebar-brand {
   font-family: var(--font-serif);
-  font-size: 1.15rem;
+  font-size: 1.35rem;
   font-weight: 600;
   color: var(--text-strong);
   letter-spacing: 0.005em;
-  padding: 0 0.6rem 0.5rem;
+  /* + 1rem left on top of sidebar's 1rem padding-left → brand glyph at
+     x ≈ 32, matching .home-header .brand and .brand-link. */
+  padding: 0 0 0 1rem;
+  line-height: 1.05;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 100ms ease;
 }
+a.sidebar-brand:hover { color: var(--accent-deep); }
 .sidebar-section-head {
   display: flex;
   align-items: center;
@@ -828,6 +993,38 @@ dialog.cmd-palette-dialog {
   border-color: var(--accent);
   background: var(--accent-faint);
 }
+/* Section-toggle: chevron + label, left-aligned in the section-head row,
+   matching the typography + horizontal padding of the static .sidebar-section-label
+   used by the lessons list. */
+.sidebar-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 0 0.6rem;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.sidebar-section-toggle:hover { color: var(--text-muted); }
+.sidebar-section-chevron {
+  transition: transform 140ms ease;
+  flex-shrink: 0;
+}
+.sidebar-section-toggle[aria-expanded='false'] .sidebar-section-chevron {
+  transform: rotate(-90deg);
+}
+/* Hide the section body when collapsed */
+.sidebar-section.collapsed > ul { display: none; }
 .sidebar-materials .hint {
   padding: 0.25rem 0.6rem;
   font-size: 0.8rem;
@@ -961,6 +1158,24 @@ ul.sidebar-threads {
   font-size: 0.7rem;
   letter-spacing: 0.05em;
 }
+/* Inline rename input — sits in place of the .thread-preview span */
+.thread-rename-input {
+  display: block;
+  width: 100%;
+  padding: 0.18rem 0.4rem;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--text-strong);
+  background: var(--bg-card);
+  border: 1px solid var(--accent-soft);
+  border-radius: 4px;
+}
+.thread-rename-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-faint);
+}
+.thread-li.renaming .thread-actions { opacity: 0; }
 .sidebar-threads .hint {
   padding: 0.3rem 0.6rem;
   font-size: 0.8rem;
@@ -1018,13 +1233,11 @@ ul.sidebar-outline li {
 .sidebar-lessons a.completed .lesson-progress-fill {
   background: var(--green);
 }
-.sidebar-lessons a:hover,
-.sidebar-outline a:hover {
+.sidebar-lessons a:hover {
   background: var(--bg-sunken);
   color: var(--text-strong);
 }
-.sidebar-lessons a.current,
-.sidebar-outline a.current {
+.sidebar-lessons a.current {
   background: var(--accent-faint);
   color: var(--accent-deep);
   font-weight: 500;
@@ -1045,23 +1258,23 @@ ul.sidebar-outline li {
   font-size: 0.7rem;
 }
 .outline-li {
-  display: flex;
-  align-items: center;
+  display: block;
   position: relative;
 }
 .outline-li > a {
-  flex: 1;
   min-width: 0;
 }
 .outline-btw {
-  flex-shrink: 0;
-  margin-right: 0.4rem;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
   padding: 0.12rem 0.5rem;
   font-size: 0.7rem;
   font-family: var(--font-mono);
   border-radius: 999px;
   border: 1px solid var(--purple);
-  background: transparent;
+  background: var(--bg);
   color: var(--purple);
   cursor: pointer;
   opacity: 0;
@@ -1070,23 +1283,52 @@ ul.sidebar-outline li {
 }
 .outline-li:hover .outline-btw,
 .outline-btw:focus { opacity: 1; }
-.outline-btw:hover {
+.outline-btw:hover:not(:disabled) {
+  /* :not(:disabled) bumps specificity past the global button:hover that
+     otherwise resets the bg to --bg-soft (cream-on-white → invisible). */
   background: var(--purple);
   color: #FFF;
 }
+/* Outline rail — Claude-doc-style: tight, flat list with a left-edge
+   accent bar on the active section (no pill background). Items at every
+   level share the same font size + tone; only horizontal indent + the
+   left bar communicate hierarchy / active state. */
+/* Outline rail — measurements lifted from platform.claude.com/docs:
+   - container width 288px (no left border)
+   - link font 14px / line-height 20px / padding 4px 0 4px 12px
+   - inactive color #73726c, active color #141413, active weight 500
+   - sub-headings indent another 12px and stay the same size */
 .sidebar-outline a {
-  font-size: 0.82rem;
-  padding-left: 0.6rem;
+  display: block;
+  font-size: 14px;
+  line-height: 20px;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+  background: transparent;
+  /* Single line, no wrap. Rail is sized to fit current titles; the rare
+     extreme-length one gets quietly clipped at the rail edge (no ellipsis,
+     no overflow into the prose). */
+  white-space: nowrap;
+  overflow: hidden;
+  transition: color 80ms ease, border-color 80ms ease;
 }
 .sidebar-outline a.outline-3 {
-  padding-left: 1.5rem;
-  color: var(--text-faint);
-  font-size: 0.78rem;
+  padding-left: 24px;
 }
-.sidebar-outline a.active {
-  background: var(--accent-faint);
-  color: var(--accent-deep);
+.sidebar-outline a:hover {
+  color: var(--text-strong);
+  background: transparent;
 }
+.sidebar-outline a.active,
+.sidebar-outline a.current {
+  background: transparent;
+  border-left-color: var(--accent);
+  color: var(--text-strong);
+  font-weight: 500;
+}
+.outline-li { margin: 0; }
 .sidebar-outline .hint {
   padding: 0.25rem 0.6rem;
   font-size: 0.8rem;
@@ -1189,11 +1431,86 @@ button.primary:hover:not(:disabled), #btn-next:hover:not(:disabled) {
   border-color: var(--accent-deep);
 }
 
+/* Theme toggle — square icon button. Sun in light mode, moon in dark. */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--text-muted);
+  position: relative;
+}
+/* Outline toggle — shown only at narrow viewports (the media query above
+   un-hides it). Same shape as the theme toggle so they line up cleanly. */
+.outline-toggle {
+  /* Default hidden — the @media (max-width:1469px) rule earlier in the
+     stylesheet re-enables this via `display: inline-flex`. */
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+}
+@media (min-width: 1470px) {
+  .outline-toggle { display: none; }
+}
+.outline-toggle:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: var(--bg-soft);
+  border-color: var(--border);
+}
+.outline-toggle[aria-expanded='true'] {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--text-strong);
+}
+.theme-toggle .sg-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.theme-toggle:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: var(--bg-soft);
+}
+/* When in "auto" mode, show a small "A" badge so the user knows the
+   theme is following the system. */
+.theme-toggle[data-theme='auto']::after {
+  content: 'A';
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  border: 1.5px solid var(--bg);
+  box-sizing: content-box;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 13px;
+  letter-spacing: 0;
+  text-align: center;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
 /* ---------- main reading area ---------- */
 main {
-  max-width: 740px;
+  max-width: 920px;
   margin: 0 auto;
   padding: 2.5rem 2rem 7rem;
+  min-width: 0;
 }
 
 /* serif headings, generous spacing */
@@ -1239,10 +1556,51 @@ main a:hover {
   text-decoration-color: var(--accent);
 }
 main blockquote {
-  border-left: 3px solid var(--border-strong);
-  padding: 0.1rem 1rem;
+  /* Match the sibling "callout" containers (details, feedback) so a
+     blockquote doesn't look like a stripped-down outlier in the prose. */
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  padding: 0.55rem 1rem;
+  border-radius: var(--radius);
   color: var(--text-muted);
   margin: 1rem 0;
+}
+main blockquote > :first-child { margin-top: 0; }
+main blockquote > :last-child { margin-bottom: 0; }
+/* Tables (markdown-it default rendering). Without explicit styles the
+   browser falls back to bare-text columns which look broken in a serif
+   reading column. */
+main table {
+  width: 100%;
+  margin: 1.1rem 0;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  display: block;            /* enables horizontal scroll on overflow */
+  overflow-x: auto;
+}
+main table thead {
+  background: var(--bg-sunken);
+}
+main table th,
+main table td {
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.5;
+}
+main table th {
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+}
+main table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-sunken) 50%, transparent);
+}
+main table code {
+  /* Inside table cells, inline code shouldn't have a heavy border. */
+  border: none;
+  padding: 0.05em 0.3em;
 }
 main ul, main ol {
   padding-left: 1.4rem;
@@ -1254,42 +1612,51 @@ main li {
 
 /* inline + block code */
 main code {
+  /* Neutral palette so inline code doesn't compete with the genuine
+     accent affordances (BTW block, FAB, lesson dot, etc.). Coral is
+     reserved for "you can chat about this" signalling now. */
   background: var(--bg-sunken);
   padding: 0.08em 0.38em;
   border-radius: 4px;
   font-family: var(--font-mono);
   font-size: 0.85em;
-  color: var(--accent-deep);
+  color: var(--text-strong);
   border: 1px solid var(--border);
 }
 main pre {
   position: relative;
-  background: var(--bg-dark);
-  color: var(--text-on-dark);
+  /* Light-mode: cream surface with body text, matches inline `code`.
+     Dark-mode: keeps a dark surface (overridden below). */
+  background: var(--bg-sunken);
+  color: var(--text);
   padding: 1.1rem 1.2rem;
   border-radius: var(--radius-lg);
   overflow-x: auto;
   font-size: 0.86em;
   line-height: 1.55;
   font-family: var(--font-mono);
-  border: 1px solid var(--border-dark);
-  /* Reclaim main's 2rem padding so pre uses the full 740px column instead
-     of just 676px. Doesn't overflow into sidebar/chat panel since main is
-     centered within the content area. */
-  margin-left: -2rem;
-  margin-right: -2rem;
+  /* Lighter border so the code block doesn't read as heavier than the
+     other module containers (table, details, feedback). */
+  border: 1px solid var(--border);
+  /* Stay aligned with the prose column. Wide content scrolls horizontally
+     inside the block rather than breaking out into the right gutter. */
+  width: 100%;
+  box-sizing: border-box;
   /* Right-edge gradient fade signals horizontal overflow. Two layered
      gradients on the bg, one fixed (scrolls with viewport) and one local
      (scrolls with content) — the visible fade fades out once you've
-     scrolled to the end, the way macOS / GitHub do it. */
+     scrolled to the end, the way macOS / GitHub do it. The gradient
+     color is parameterized via --sg-pre-bg (light = bg-sunken, dark
+     overridden below). */
+  --sg-pre-bg: var(--bg-sunken);
   background-image:
-    linear-gradient(to right, var(--bg-dark), transparent 30%),
-    linear-gradient(to left, var(--bg-dark), transparent 30%);
+    linear-gradient(to right, var(--sg-pre-bg), transparent 30%),
+    linear-gradient(to left, var(--sg-pre-bg), transparent 30%);
   background-position: 0 0, 100% 0;
   background-size: 24px 100%, 24px 100%;
   background-attachment: local, scroll;
   background-repeat: no-repeat;
-  background-color: var(--bg-dark);
+  background-color: var(--sg-pre-bg);
 }
 main pre::-webkit-scrollbar {
   height: 9px;
@@ -1298,11 +1665,51 @@ main pre::-webkit-scrollbar-track {
   background: transparent;
 }
 main pre::-webkit-scrollbar-thumb {
-  background: var(--bg-dark-soft);
+  background: var(--border);
   border-radius: 6px;
 }
 main pre::-webkit-scrollbar-thumb:hover {
   background: var(--border-strong);
+}
+/* Copy-to-clipboard button — sits in the top-right of every <pre>. Stays
+   faint until the user hovers the block. */
+.sg-pre-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.22rem 0.55rem 0.22rem 0.45rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease, background 100ms ease;
+  z-index: 1;
+}
+main pre:hover > .sg-pre-copy,
+.sg-pre-copy:focus-visible,
+.sg-pre-copy.flashed { opacity: 1; }
+.sg-pre-copy:hover:not(:disabled) {
+  color: var(--text-strong);
+  border-color: var(--accent-soft);
+  background: var(--bg-card);
+}
+.sg-pre-copy.flashed {
+  color: var(--accent-deep);
+  border-color: var(--accent-soft);
+  background: var(--accent-faint);
+}
+.sg-pre-copy svg { flex-shrink: 0; }
+:root[data-theme='dark'] .sg-pre-copy {
+  background: color-mix(in srgb, var(--bg-card) 80%, transparent);
+  border-color: color-mix(in srgb, #fff 12%, transparent);
 }
 main pre code {
   background: transparent;
@@ -1356,21 +1763,64 @@ main pre code {
   font-size: 0.95rem;
 }
 
-/* ---------- studyground question markers ---------- */
+/* ---------- studyground question markers ----------
+   mergeQuestionBlocks() in main.js turns the renderer's flat
+   <div class="sg-question"> + adjacent answer block into a single
+   <details class="sg-question"> with the question as <summary> — click
+   the question to expand/collapse the answer inline.
+
+   The fallback rules (without `details`) keep the pre-merge transient
+   DOM looking right too (lessons stream in piece by piece). */
 .sg-question {
   display: flex;
   align-items: baseline;
   gap: 0.85rem;
-  padding: 0.7rem 1rem;
   margin: 1.2rem 0 0;
-  border-left: 3px solid var(--blue);
+  border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent);
   background: var(--blue-soft);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  border-radius: var(--radius);
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+/* <div> (transient, pre-merge) form gets its own padding; the <details>
+   form (post-merge) pushes padding into <summary> instead so the body
+   sits flush. */
+div.sg-question { padding: 0.7rem 1rem; }
+details.sg-question { padding: 0; display: block; }
+details.sg-question > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+  list-style: none;
+  font: inherit;
+  color: inherit;
+}
+details.sg-question > summary::-webkit-details-marker { display: none; }
+details.sg-question > summary::marker { content: ''; }
+details.sg-question[open] > summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--blue) 18%, transparent);
 }
 .sg-question.btw {
-  border-left-color: var(--purple);
-  background: var(--purple-soft);
+  /* btw blocks share the coral accent with the rest of the app's
+     "you can chat about this" affordances (selection toolbar, FAB, etc.). */
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-faint);
 }
+details.sg-question.btw[open] > summary {
+  border-bottom-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.sg-question:hover {
+  border-color: color-mix(in srgb, var(--blue) 55%, transparent);
+}
+.sg-question.btw:hover {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+details.sg-question:focus-within {
+  outline: none;
+}
+
 .sg-q-label {
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -1382,7 +1832,7 @@ main pre code {
   font-weight: 500;
 }
 .sg-question.btw .sg-q-label {
-  color: var(--purple);
+  color: var(--accent-deep);
 }
 .sg-q-text {
   font-style: italic;
@@ -1391,31 +1841,36 @@ main pre code {
   flex: 1;
   min-width: 0;
 }
-.sg-q-dig {
-  margin-left: auto;
-  flex-shrink: 0;
-  padding: 0.18rem 0.7rem;
-  border-radius: 999px;
-  border: 1px solid var(--purple);
-  background: transparent;
-  color: var(--purple);
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.05em;
-  opacity: 0;
-  transition: opacity 100ms ease;
-}
-.sg-question.btw:hover .sg-q-dig,
-.sg-q-dig:focus { opacity: 1; }
-.sg-q-dig:hover { background: var(--purple); color: #FFF; }
 
+/* Body inside a merged details (the answer or deeper-content). */
+.sg-question-body {
+  padding: 0.7rem 1rem 0.85rem;
+}
+.sg-question-body > :first-child { margin-top: 0; }
+.sg-question-body > :last-child { margin-bottom: 0; }
+/* The .sg-answer inside a merged details no longer needs its own outer
+   border / background — the parent details already provides them. */
+.sg-question-body > .sg-answer {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.sg-question-body > .sg-answer.pending {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Pre-merge transient state for a streaming/loading lesson — the
+   .sg-answer block still appears on its own before mergeQuestionBlocks
+   runs. Keep it visually distinct then. */
 .sg-answer {
-  margin: 0 0 1.4rem;
+  margin: 0.3rem 0 1.4rem;
   padding: 0 1rem;
-  border-left: 3px solid var(--blue);
+  border: 1px solid color-mix(in srgb, var(--blue) 25%, transparent);
   background: var(--blue-soft);
-  border-radius: 0 0 var(--radius) var(--radius);
+  border-radius: var(--radius);
 }
 .sg-answer.answered {
   padding: 0.5rem 1rem 0.7rem;
@@ -1446,33 +1901,54 @@ main pre code {
   color: #FFF;
 }
 
-/* details (btw folded + recap folded) */
+/* details (btw folded + recap folded) — share the coral accent with
+   .sg-question.btw so nested "Full review" / "BTW" disclosures inside a
+   feedback block don't introduce a clashing purple. */
 details {
   margin: 0.8rem 0 1.4rem;
-  background: var(--purple-soft);
-  border-left: 3px solid var(--purple);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--accent-faint);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius);
   padding: 0.1rem 1rem;
 }
 details > summary {
   cursor: pointer;
   font-size: 0.85rem;
-  color: var(--purple);
+  color: var(--accent-deep);
   font-family: var(--font-mono);
   padding: 0.5rem 0;
   user-select: none;
   font-weight: 500;
 }
 details > summary::marker {
-  color: var(--purple);
+  color: var(--accent);
 }
 details[open] > summary {
   margin-bottom: 0.5rem;
   padding-bottom: 0.3rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--purple) 20%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+}
+/* The merged-question details handles its own summary spacing (the body
+   carries the padding, not the summary), so undo the generic details[open]
+   margins inside .sg-question. */
+details.sg-question[open] > summary {
+  margin-bottom: 0;
+  padding-bottom: 0.7rem;
+}
+/* When a details sits inside a feedback block (same coral wash) it
+   would otherwise blend right in. Give it a clean card surface so the
+   nested hierarchy is readable. */
+.sg-feedback details {
+  background: var(--bg-card);
 }
 details > :not(summary) {
   margin-block: 0.6rem;
+}
+/* The merged-question .sg-question-body provides its own padding — the
+   generic `details > :not(summary)` margin would push the body away from
+   the summary's bottom border. */
+details.sg-question > .sg-question-body {
+  margin-block: 0;
 }
 
 /* ---------- exercises ---------- */
@@ -1829,6 +2305,10 @@ footer {
   z-index: -1;
   border-radius: 1px;
 }
+.sg-sel-toolbar[data-place="below"]::after {
+  bottom: auto;
+  top: -3px;
+}
 
 /* ---------- side chat panel ---------- */
 .sg-chat-panel {
@@ -1877,10 +2357,10 @@ footer {
   justify-content: space-between;
   gap: 0.4rem;
   margin: 0;
-  padding: 0.4rem 0.5rem 0.4rem 0.65rem;
-  border-left: 2px solid var(--purple);
-  background: var(--purple-soft);
-  border-radius: 0 4px 4px 0;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  background: var(--accent-faint);
+  border-radius: var(--radius);
   font-size: 0.78rem;
   color: var(--text-muted);
   font-style: italic;
@@ -1919,12 +2399,12 @@ footer {
   align-items: center;
   justify-content: space-between;
   padding: 0.85rem 1.2rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  background: var(--accent-faint);
 }
 .sg-chat-title {
   font-family: var(--font-mono);
-  color: var(--purple);
+  color: var(--accent-deep);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-size: 0.76rem;
@@ -1941,13 +2421,44 @@ footer {
   background: var(--accent-faint);
   border-color: var(--accent-soft);
 }
-#btn-tutor {
-  background: var(--accent-faint);
-  border-color: var(--accent-soft);
-  color: var(--accent-deep);
+/* Floating Tutor FAB (Claude-docs-style "Ask Docs" pill, bottom-right). */
+.tutor-fab {
+  position: fixed;
+  right: 1.6rem;
+  bottom: 1.4rem;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 1.1rem 0.7rem 0.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent-deep);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.92rem;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(201, 100, 66, 0.32),
+              0 2px 6px rgba(0, 0, 0, 0.08);
+  transition: transform 140ms cubic-bezier(0.2, 1.3, 0.4, 1), box-shadow 140ms ease, filter 120ms ease;
 }
-#btn-tutor:hover:not(:disabled) {
-  background: var(--accent-soft);
+/* Only surface the FAB inside the reader view. */
+body:has(#view-reader:not([hidden])) .tutor-fab { display: inline-flex; }
+.tutor-fab:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+  transform: translateY(-1px);
+  filter: brightness(1.06) saturate(1.04);
+  box-shadow: 0 12px 30px rgba(201, 100, 66, 0.38),
+              0 2px 6px rgba(0, 0, 0, 0.08);
+}
+.tutor-fab:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
+.tutor-fab-icon { font-size: 1rem; line-height: 1; }
+.tutor-fab-label { letter-spacing: 0.01em; }
+/* When the chat panel is open it occupies the right edge, so shift the
+   FAB out of the way (mirror of body.sg-chat-open padding-right). */
+body.sg-chat-open .tutor-fab {
+  right: calc(var(--sg-chat-width, 440px) + 1.6rem);
 }
 .sg-chat-head-actions {
   display: flex;
@@ -1955,13 +2466,33 @@ footer {
   align-items: center;
 }
 .sg-chat-save,
-.sg-chat-copy {
+.sg-chat-copy,
+.sg-chat-mode {
   padding: 0.3rem 0.75rem;
   border-radius: 999px;
   cursor: pointer;
   font-size: 0.78rem;
   font-weight: 500;
   font-family: inherit;
+}
+.sg-chat-mode {
+  /* Read-only pill: cream + soft accent border so it pops against the
+     tutor-mode head bar (which is `--accent-faint` in light, dark in dark). */
+  border: 1px solid var(--accent-soft);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+.sg-chat-mode:hover { background: var(--bg-sunken); color: var(--text-strong); border-color: var(--accent); }
+.sg-chat-mode[data-mode='edit'] {
+  border-color: var(--accent);
+  background: var(--accent-faint);
+  color: var(--accent-deep);
+}
+.sg-chat-mode[data-mode='edit']:hover {
+  background: var(--accent-soft);
 }
 .sg-chat-copy {
   border: 1px solid var(--border-strong);
@@ -2007,16 +2538,17 @@ footer {
   color: var(--text-strong);
 }
 .sg-chat-selection {
-  padding: 0.8rem 1.2rem;
+  margin: 0.9rem 1.1rem 0.4rem;
+  padding: 0.7rem 0.95rem;
   font-size: 0.86rem;
   color: var(--text-muted);
-  background: var(--purple-soft);
-  border-bottom: 1px solid var(--border);
+  background: var(--accent-faint);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius);
   font-style: italic;
   font-family: var(--font-serif);
   max-height: 7rem;
   overflow-y: auto;
-  border-left: 3px solid var(--purple);
   line-height: 1.55;
 }
 .sg-chat-messages {
@@ -2031,7 +2563,18 @@ footer {
   font-size: 0.93rem;
   line-height: 1.6;
 }
+.sg-chat-empty-hint {
+  align-self: center;
+  margin: 1.4rem 0.6rem;
+  color: var(--text-faint);
+  font-size: 0.88rem;
+  font-style: italic;
+  text-align: center;
+  max-width: 22rem;
+  line-height: 1.5;
+}
 .sg-chat-msg.user {
+  position: relative;
   align-self: flex-end;
   background: var(--accent-faint);
   color: var(--text-strong);
@@ -2040,6 +2583,85 @@ footer {
   max-width: 86%;
   white-space: pre-wrap;
   border: 1px solid var(--accent-soft);
+}
+.sg-chat-msg-body { white-space: pre-wrap; }
+.sg-chat-msg-edit-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: -1.85rem;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 90ms ease, color 90ms ease, border-color 90ms ease;
+  font-family: inherit;
+}
+.sg-chat-msg.user:hover .sg-chat-msg-edit-btn,
+.intake-msg.user:hover .sg-chat-msg-edit-btn,
+.sg-chat-msg-edit-btn:focus-visible { opacity: 1; }
+.sg-chat-msg-edit-btn:hover { color: var(--accent-deep); border-color: var(--accent-soft); }
+.sg-chat-msg.editing,
+.intake-msg.user.editing {
+  max-width: 100%;
+  width: 100%;
+  align-self: stretch;
+  background: var(--bg-card);
+  border-color: var(--accent-soft);
+}
+.sg-chat-msg-edit-area {
+  display: block;
+  width: 100%;
+  min-height: 4em;
+  padding: 0.55rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.93rem;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.sg-chat-msg-edit-area:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-faint);
+}
+.sg-chat-msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+.sg-chat-msg-edit-actions button {
+  font-size: 0.82rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+.sg-chat-msg-edit-actions button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg-card);
+}
+.sg-chat-msg-edit-actions button.primary:hover {
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
 }
 .sg-chat-msg.assistant {
   background: transparent;
@@ -2082,15 +2704,26 @@ footer {
   border-top: 1px solid var(--border);
   background: var(--bg);
 }
-.sg-chat-form input {
+.sg-chat-form input,
+.sg-chat-form textarea {
   flex: 1;
   padding: 0.55rem 0.9rem;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   font-size: 0.92rem;
+  font-family: inherit;
+  line-height: 1.5;
   background: var(--bg-card);
+  color: inherit;
 }
-.sg-chat-form input:focus {
+.sg-chat-form textarea {
+  resize: none;
+  min-height: calc(1.5em + 1.1rem); /* one line + vertical padding */
+  max-height: 160px;                /* JS autosizeTextarea caps height too */
+  overflow-y: auto;
+}
+.sg-chat-form input:focus,
+.sg-chat-form textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-faint);
@@ -2106,6 +2739,25 @@ footer {
 .sg-chat-form button:hover:not(:disabled) {
   background: var(--accent-deep);
   border-color: var(--accent-deep);
+}
+/* Stop mode: same shape, but switches to a neutral grey + stop icon hint. */
+.sg-chat-form button[data-mode='stop'],
+#intake-form button[data-mode='stop'] {
+  background: var(--text-muted);
+  border-color: var(--text-muted);
+}
+.sg-chat-form button[data-mode='stop']:hover:not(:disabled),
+#intake-form button[data-mode='stop']:hover:not(:disabled) {
+  background: var(--text-strong);
+  border-color: var(--text-strong);
+}
+/* Interrupted assistant turn — leave whatever partial text was painted,
+   tag it visually so the user knows the stream was cut short. */
+.sg-chat-msg.assistant.interrupted,
+.intake-msg.assistant.interrupted {
+  opacity: 0.75;
+  border-left: 2px solid var(--text-faint);
+  padding-left: 0.6rem;
 }
 
 /* KaTeX inherits font-color from us */

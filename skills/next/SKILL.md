@@ -10,7 +10,7 @@ Generate the next lesson in the user's current track.
 ## Steps
 1. Read `$STUDYGROUND_DIR/progress.json` to find `current_track` and what's been covered.
 2. **Read `$STUDYGROUND_DIR/tracks/<current_track>/curriculum.md` first.** If it exists, the next lesson should be the **next item in its Plan that isn't already in `completed[]`**. Match its title and scope closely. If the user's recent activity (stuck-points in memory, btw chats) suggests they need a detour, you may insert one — but in the lesson's "Why this matters" paragraph briefly explain why this isn't the original Plan's next item.
-3. **Glob `$STUDYGROUND_DIR/tracks/<current_track>/materials/`.** If anything is there, read the text-based files (.md, .txt) — these are reference sources the user uploaded. Ground the lesson in them; cite specific passages when relevant. Materials are authoritative over your priors.
+3. **Glob `$STUDYGROUND_DIR/tracks/<current_track>/materials/`.** If anything is there, read it — these are reference sources the user uploaded. `Read` handles PDFs natively; for files >10 pages pass `pages: "1-N"` (max 20 per call) and iterate as needed. Ground the lesson in them; cite specific passages when relevant. Materials are authoritative over your priors. Don't try `pdftotext` or similar via Bash — the Read tool replaces them.
 4. Read the most recent lesson file in `tracks/<current_track>/lessons/` to pick up the narrative thread.
 5. Skim `$STUDYGROUND_DIR/memory/CLAUDE.md` for learner profile + recent stuck-points.
 6. Write `$STUDYGROUND_DIR/tracks/<current_track>/lessons/<NN+1>-<slug>.md` following `_shared/lesson-format.md`.
@@ -20,7 +20,7 @@ Generate the next lesson in the user's current track.
 - 5–10 min read per lesson
 - One main concept per lesson
 - 1–2 `?>` markers where a thoughtful student would pause. Each `?>` MUST be followed by a single line `<!-- answer:pending -->` and NO pre-written answer.
-- 0–3 `?>>` btw markers, each with a short pre-written answer inside `<details><summary>btw</summary>...</details>`.
+- 0–3 `?>>` btw markers, each with a short pre-written answer inside `<details><summary>deeper</summary>...</details>`.
 - 0–1 `:::exercise` blocks
 
 ## If no track exists

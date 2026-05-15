@@ -191,15 +191,28 @@ Locate the selection in the file, insert a tightly-formatted ?>> block + <detail
   return runClaude({ prompt, pluginRoot, studygroundDir });
 }
 
-function buildTutorPrompt({ studygroundDir, track, history, userMessage }) {
+function buildTutorPrompt({ studygroundDir, track, history, userMessage, mode }) {
   const turns = (history || [])
     .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.content}`)
     .join('\n\n');
+  const editLine = mode === 'edit'
+    ? `**Edit mode is ON for this turn.** When the learner asks you to apply a
+change (rewrite a paragraph, fix a typo, swap a code block for a markdown
+table, etc.), use Edit/Write to actually make the change to files under
+tracks/${track}/. Always read the file first to see exact context, edit
+surgically, then tell the learner in one sentence what you changed and where.
+Don't make changes the learner didn't ask for.`
+    : `**Read-only mode.** Do NOT write any files. If the learner asks you to
+apply a change, describe the diff or paste the rewritten snippet and tell
+them to flip the **read-only ↔ can edit** toggle in the panel header if
+they want you to edit the file directly.`;
   return `You are working inside ${studygroundDir}.
 
 Use the studyground "tutor" skill. The current track is "${track}". Read its
 curriculum, lessons listing, materials, threads, and progress.json shallowly
-to ground your reply. Do NOT write any files.
+to ground your reply.
+
+${editLine}
 
 ${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}User's current message:
 ${userMessage || '(no message — the panel was just opened. Give a brief 1-paragraph status check: where are they in the curriculum, what just happened recently, and 1-2 next-step suggestions.)'}`;
@@ -210,6 +223,10 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
     onError?.(new Error('tutor requires { track }'));
     return null;
   }
+  const mode = body.mode === 'edit' ? 'edit' : 'read';
+  const allowedTools = mode === 'edit'
+    ? 'Read,Edit,Write,Glob,Grep,Skill,Bash(ls *),Bash(cat *)'
+    : 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *)';
   const args = [
     '-p',
     buildTutorPrompt({
@@ -217,16 +234,17 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
       track: body.track,
       history: body.history,
       userMessage: body.user_message,
+      mode,
     }),
     '--plugin-dir', pluginRoot,
     '--add-dir', studygroundDir,
     '--permission-mode', 'acceptEdits',
-    '--allowed-tools', 'Read,Glob,Grep,Skill,Bash(ls *),Bash(cat *)',
+    '--allowed-tools', allowedTools,
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format', 'stream-json',
     '--include-partial-messages',
     '--verbose',
-    '--max-turns', '10',
+    '--max-turns', mode === 'edit' ? '14' : '10',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {

@@ -12,7 +12,7 @@ You are tutoring the user in **studyground** — a local learning environment wh
 - `$STUDYGROUND_DIR/progress.json` — current state
 - `$STUDYGROUND_DIR/memory/CLAUDE.md` — learner profile
 - `$STUDYGROUND_DIR/tracks/<track-slug>/curriculum.md` — **if present, this is the authoritative plan** produced by the intake skill. The first lesson must match its "1. {title} — {scope}" entry. Do not invent a different sequence.
-- `$STUDYGROUND_DIR/tracks/<track-slug>/materials/` — user-uploaded reference materials (PDFs, markdown notes, web snippets). **Always glob this directory first.** If anything is there, read the text-based files and use them as the source of truth for the track; quote/cite specific passages when relevant. If conflicting, materials win over your priors.
+- `$STUDYGROUND_DIR/tracks/<track-slug>/materials/` — user-uploaded reference materials (PDFs, markdown notes, web snippets). **Always glob this directory first.** If anything is there, read it and use it as the source of truth for the track; quote/cite specific passages when relevant. **`Read` handles PDFs natively** — for files >10 pages pass `pages: "1-N"` (max 20 pages per call), then a second range as needed. Don't try `pdftotext` or other binaries via Bash; the Read tool replaces them. If conflicting, materials win over your priors.
 
 ## Output
 Create exactly one new lesson file at `$STUDYGROUND_DIR/tracks/<current_track>/lessons/<NN>-<slug>.md`, where `NN` is the next zero-padded index (start at `01` for a new track).
@@ -24,7 +24,7 @@ See `_shared/lesson-format.md` for the full spec. Highlights:
 - Math with `$...$` and `$$...$$`
 - Code with fenced blocks; ` ```python run` for in-browser executable, plain ` ```python` for read-only
 - `?>` markers: write the question only, **immediately followed by a single line** `<!-- answer:pending -->`. **Do not write the answer yourself** — the user will click "Ask" later and a separate skill fills it in.
-- `?>>` markers: write the question AND a short pre-answer wrapped in `<details>` with `<summary>btw</summary>`. Keep btw answers 1–3 sentences.
+- `?>>` markers: write the question AND a short pre-answer wrapped in `<details>` with `<summary>deeper</summary>`. Keep btw answers 1–3 sentences.
 - `:::exercise <name>` containers for hands-on practice (creates `exercises/<name>/`)
 
 ## After writing

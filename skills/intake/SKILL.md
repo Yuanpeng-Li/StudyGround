@@ -53,10 +53,13 @@ hasn't already addressed; skip the ones that are obvious from context:
 5. **Style nudges** — intuition-first, code-first, math-first. Long
    derivations welcome or skip them.
 6. **Materials they've uploaded.** If `tracks/<track>/materials/` has files,
-   glance at the listing (don't read full PDFs unless asked); mention them by
-   name and ask whether to ground the course in those or treat them as
-   reference. If empty, ask whether there are papers/repos/books the course
-   should track.
+   glance at the listing; mention them by name. **The `Read` tool reads PDFs
+   natively** — for a small PDF (≤10 pages) just `Read(file)`; for larger
+   PDFs (slide decks, papers) pass `pages: "1-5"` and skim the first few
+   pages so you can speak to the actual content, not just the filename.
+   Then ask whether to ground the course in those or treat them as
+   reference. If empty, ask whether there are papers/repos/books the
+   course should track.
 
 A good first turn just opens the door: greet by topic (read
 `tracks/<track>/track.json` for title + description), say one true thing about
@@ -124,5 +127,8 @@ lesson 1, or edit `curriculum.md` if anything's off." Keep it concrete.
   user. Just write your question in plain text/markdown; the user will type
   back. The available tools are: Read, Glob, Grep, Bash(ls *), Bash(cat *).
 - **Don't pretend to read PDFs you didn't read.** Use `Glob` to list
-  materials. Read text files (`.md`, `.txt`) shallowly if useful. Skip
-  binaries.
+  materials. Read text files (`.md`, `.txt`) shallowly if useful. **PDFs
+  *are* readable** — call `Read(file_path, pages: "1-5")` for big ones
+  (≤20 pages per call). Don't try `pdftotext` / `pdfimages` via Bash;
+  those aren't allowed and aren't installed. Skip true binaries (images,
+  archives, video).

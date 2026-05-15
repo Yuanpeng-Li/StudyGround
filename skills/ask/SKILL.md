@@ -44,7 +44,7 @@ existing `<details>` block's body.
 2. The next block is `<details>...</details>` — replace its contents
    (everything between `<summary>...</summary>` and `</details>`) with a deeper
    answer that builds on the original short one
-3. Keep the `<summary>btw</summary>` line intact
+3. Keep the `<summary>deeper</summary>` line intact
 
 You don't need to delegate this — the entire `claude -p` call is already a
 short-lived isolated process, so there's no main context to protect.

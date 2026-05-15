@@ -77,6 +77,12 @@ console.log('  badge border on hover:', badgeBorder);
 // Light-mode --accent is #C96442 = rgb(201, 100, 66) (or color-mix variants)
 /(201|c96442)/i.test(badgeBorder) ? pass(`badge border lifts to --accent on card hover (${badgeBorder})`) : fail(`badge border doesn't lift (${badgeBorder})`);
 
+// And the CARD's own border should also lift to --accent (used to stay
+// stuck at --accent-soft because `.track-card.current` overrode the hover).
+const cardBorder = await p.evaluate(() => getComputedStyle(document.querySelector('.track-card.current')).borderColor);
+console.log('  card border on hover:', cardBorder);
+/(201|c96442)/i.test(cardBorder) ? pass(`card border lifts to --accent on hover (${cardBorder})`) : fail(`card border doesn't lift (${cardBorder})`);
+
 await p.screenshot({ path: '/tmp/sg-home-badge.png', fullPage: false });
 console.log('shot: /tmp/sg-home-badge.png');
 await b.close();

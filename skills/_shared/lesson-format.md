@@ -35,7 +35,7 @@ Use ` ```python run` for executable cells (Pyodide), plain ` ```python` for read
 ?>> Tangential question the curious student might wonder about
 
 <details>
-<summary>btw</summary>
+<summary>deeper</summary>
 
 A short, pre-written answer to the tangential question. Folded by default so
 it doesn't break the main reading flow.
@@ -87,13 +87,33 @@ Format:
 ?>> Question text
 
 <details>
-<summary>btw</summary>
+<summary>deeper</summary>
 
 A 1–3 sentence answer here. Keep it tight — if it needs to be long, it's
 probably main-thread material.
 
 </details>
 ```
+
+**Two separate top-level blocks**: the `?>>` line on its own (blank line
+above and below), then the `<details>`. The web reader merges them into a
+single rounded callout where the question is the click-to-expand summary
+and the body is the deeper answer. The `<summary>` is the literal word
+`deeper`, *never* the question text.
+
+❌ Don't do this — the marker leaks into the summary verbatim:
+
+```markdown
+<details>
+<summary>?>> Question text</summary>
+answer
+</details>
+```
+
+❌ And don't pre-answer a `?>` (main-thread question) by wrapping it in a
+details block either. `?>` is **NOT** pre-answered; the user clicks Ask to
+generate one. Use `<!-- answer:pending -->` on its own line right after the
+`?>` question.
 
 ### `:::exercise <name>` — hands-on coding block
 

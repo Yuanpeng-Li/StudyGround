@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
-    <title>studyground</title>
+    <title>StudyGround</title>
+    <link rel="icon" type="image/png" href="/assets/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -22,7 +23,7 @@
     <!-- HOME VIEW -->
     <div id="view-home" class="view">
       <header class="home-header">
-        <h1 class="brand">studyground</h1>
+        <h1 class="brand">StudyGround</h1>
         <div class="home-actions">
           <button class="theme-toggle" title="theme (click to cycle auto/light/dark)" aria-label="theme">auto</button>
         </div>
@@ -44,7 +45,7 @@
     <!-- INTAKE VIEW -->
     <div id="view-intake" class="view" hidden>
       <header class="home-header">
-        <a href="#/" class="brand-link">studyground</a>
+        <a href="#/" class="brand-link">StudyGround</a>
         <span class="intake-track-name" id="intake-track-name">planning…</span>
         <button class="theme-toggle" title="theme">auto</button>
       </header>
@@ -79,32 +80,40 @@
     <div id="view-reader" class="view" hidden>
       <div class="app">
         <aside id="sidebar">
-          <button class="sidebar-toggle" data-action="toggle-sidebar" title="collapse sidebar" aria-label="collapse sidebar">«</button>
-          <a href="#/" class="sidebar-back" data-action="go-home">← all courses</a>
-          <div class="sidebar-brand">studyground</div>
+          <div class="sidebar-head">
+            <a class="sidebar-brand" href="#/" data-action="go-home" title="back to all courses">StudyGround</a>
+            <button class="sidebar-toggle" data-action="toggle-sidebar" title="collapse sidebar" aria-label="collapse sidebar">«</button>
+          </div>
+          <button type="button" class="sidebar-search" data-action="open-cmd-palette" title="search lessons & jump to any course">
+            <span class="sidebar-search-icon" aria-hidden="true">⌕</span>
+            <span class="sidebar-search-label">Search…</span>
+            <kbd class="sidebar-search-kbd">⌘K</kbd>
+          </button>
           <div class="sidebar-section">
             <div class="sidebar-section-label" id="track-label">no track yet</div>
             <ul class="sidebar-lessons" id="sidebar-lessons"></ul>
           </div>
-          <div class="sidebar-section">
-            <div class="sidebar-section-label sidebar-section-head">
-              <span>materials</span>
+          <div class="sidebar-section" data-section="threads">
+            <div class="sidebar-section-head">
+              <button type="button" class="sidebar-section-toggle" data-action="toggle-section" data-section="threads" aria-expanded="true">
+                <svg class="sidebar-section-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 6 8 10 12 6"/></svg>
+                <span>threads</span>
+              </button>
+            </div>
+            <ul class="sidebar-threads" id="sidebar-threads">
+              <li class="hint">(no chats yet)</li>
+            </ul>
+          </div>
+          <div class="sidebar-section" data-section="materials">
+            <div class="sidebar-section-head">
+              <button type="button" class="sidebar-section-toggle" data-action="toggle-section" data-section="materials" aria-expanded="true">
+                <svg class="sidebar-section-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 6 8 10 12 6"/></svg>
+                <span>materials</span>
+              </button>
               <button class="sidebar-section-action" data-action="add-material" title="upload a material">＋</button>
             </div>
             <ul class="sidebar-materials" id="sidebar-materials">
               <li class="hint">drop in PDFs/notes →</li>
-            </ul>
-          </div>
-          <div class="sidebar-section">
-            <div class="sidebar-section-label">outline</div>
-            <ul class="sidebar-outline" id="sidebar-outline">
-              <li class="hint">pick a lesson →</li>
-            </ul>
-          </div>
-          <div class="sidebar-section">
-            <div class="sidebar-section-label">threads</div>
-            <ul class="sidebar-threads" id="sidebar-threads">
-              <li class="hint">(no chats yet)</li>
             </ul>
           </div>
         </aside>
@@ -114,20 +123,32 @@
             <h1 id="lesson-title-bar"></h1>
             <div class="actions">
               <button class="theme-toggle" title="theme (click to cycle auto/light/dark)" aria-label="theme">auto</button>
-              <button id="btn-tutor" title="Talk to your tutor about this course">💬 Tutor</button>
+              <button id="outline-toggle" class="outline-toggle" type="button" aria-label="Toggle outline" aria-expanded="false" title="show outline">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="0.8" fill="currentColor"/><circle cx="4" cy="12" r="0.8" fill="currentColor"/><circle cx="4" cy="18" r="0.8" fill="currentColor"/></svg>
+              </button>
               <button id="btn-recap" title="Fold answered Q&A in this lesson">Recap</button>
               <button id="btn-next">Next →</button>
             </div>
           </header>
-          <main id="lesson-view">
-            <div class="lesson-empty">
-              <p class="lesson-empty-cta">
-                <button class="primary" data-action="open-tutor">💬 Talk to your tutor</button>
-                <span class="lesson-empty-cta-hint"> — they'll suggest where to go next.</span>
-              </p>
-              <p class="hint">Or pick a lesson from the sidebar · click <b>Next →</b> to generate one.</p>
-            </div>
-          </main>
+          <div class="content-body">
+            <main id="lesson-view">
+              <div class="lesson-empty">
+                <p class="lesson-empty-cta">
+                  <button class="primary" data-action="open-tutor">💬 Talk to your tutor</button>
+                  <span class="lesson-empty-cta-hint"> — they'll suggest where to go next.</span>
+                </p>
+                <p class="hint">Or pick a lesson from the sidebar · click <b>Next →</b> to generate one.</p>
+              </div>
+            </main>
+            <aside id="outline-rail">
+              <div class="sidebar-section">
+                <div class="sidebar-section-label">outline</div>
+                <ul class="sidebar-outline" id="sidebar-outline">
+                  <li class="hint">pick a lesson →</li>
+                </ul>
+              </div>
+            </aside>
+          </div>
         </div>
       </div>
     </div>
@@ -135,6 +156,12 @@
     <footer>
       <span id="status">idle</span>
     </footer>
+
+    <!-- Floating tutor button — visible only in the reader view -->
+    <button id="btn-tutor" class="tutor-fab" title="Talk to your tutor about this course">
+      <span class="tutor-fab-icon" aria-hidden="true">💬</span>
+      <span class="tutor-fab-label">Tutor</span>
+    </button>
 
     <div id="next-progress" hidden>
       <div class="np-header">
@@ -172,6 +199,30 @@
         <div class="dlg-actions">
           <button type="button" data-action="close-dialog">Cancel</button>
           <button type="submit" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Edit-track modal -->
+    <dialog id="edit-track-dialog" class="sg-dialog">
+      <form id="edit-track-form">
+        <h3>Edit course</h3>
+        <div class="dlg-row">
+          <label for="et-emoji">Cover</label>
+          <input id="et-emoji" name="emoji" maxlength="4" autocomplete="off" />
+        </div>
+        <div class="dlg-row">
+          <label for="et-title">Title</label>
+          <input id="et-title" name="title" required autocomplete="off" />
+        </div>
+        <div class="dlg-row">
+          <label for="et-desc">Description</label>
+          <textarea id="et-desc" name="description" rows="2" placeholder="optional one-liner"></textarea>
+        </div>
+        <p class="dlg-hint" id="et-slug-hint"></p>
+        <div class="dlg-actions">
+          <button type="button" data-action="close-edit-dialog">Cancel</button>
+          <button type="submit" class="primary">Save</button>
         </div>
       </form>
     </dialog>

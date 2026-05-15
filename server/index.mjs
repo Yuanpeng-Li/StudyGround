@@ -136,11 +136,17 @@ async function handle(req, res) {
         const safeName = name.replace(/[^\w.\-]+/g, '_').slice(0, 120);
         if (!safeName) return sendJSON(res, 400, { ok: false, error: 'invalid name' });
         await ensureTrackDir(trackSlug);
-        const dest = join(STUDYGROUND_DIR, 'tracks', trackSlug, 'materials', safeName);
+        const materialsDir = join(STUDYGROUND_DIR, 'tracks', trackSlug, 'materials');
+        // Auto-rename on collision so a duplicate upload doesn't silently
+        // clobber prior data. Caller can pass ?replace=1 to opt into
+        // overwrite (used by save-thread style flows).
+        const replace = url.searchParams.get('replace') === '1';
+        const finalName = replace ? safeName : await uniqueFilename(materialsDir, safeName);
+        const dest = join(materialsDir, finalName);
         if (typeof content === 'string') await writeFile(dest, content, 'utf8');
         else if (Buffer.isBuffer(content)) await writeFile(dest, content);
         else return sendJSON(res, 400, { ok: false, error: 'no content' });
-        return sendJSON(res, 200, { ok: true, name: safeName });
+        return sendJSON(res, 200, { ok: true, name: finalName, renamed: finalName !== safeName });
       }
     }
     // /api/tracks/<slug>/materials/<filename>
@@ -386,6 +392,30 @@ async function handle(req, res) {
     return sendJSON(res, 200, { ok: true, ...data });
   }
 
+  // PUT /api/tutor/<track> — replace persisted tutor history (used by
+  // edit-message-and-truncate UI). Body: { history: [{role,content,ts?}…] }.
+  if (path.startsWith('/api/tutor/') && req.method === 'PUT') {
+    const trackSlug = decodeURIComponent(path.slice('/api/tutor/'.length));
+    if (!existsSync(trackDir(trackSlug))) return sendJSON(res, 404, { ok: false, error: 'track not found' });
+    const body = await readBody(req);
+    const history = Array.isArray(body?.history) ? body.history : [];
+    const now = new Date().toISOString();
+    const normalized = history
+      .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
+      .map((m) => ({ role: m.role, content: String(m.content || ''), ts: m.ts || now }));
+    try {
+      await rewriteChatLines(
+        tutorChatPath(trackSlug),
+        () => ({ kind: 'tutor', track: trackSlug, created_at: now }),
+        normalized,
+      );
+      const data = await loadTutorChat(trackSlug);
+      return sendJSON(res, 200, { ok: true, ...data });
+    } catch (e) {
+      return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
+    }
+  }
+
   // POST /api/tutor — streaming, multi-turn, persists per-track
   if (path === '/api/tutor' && req.method === 'POST') {
     const body = await readBody(req);
@@ -574,7 +604,9 @@ async function handle(req, res) {
       const content = await readFile(file, 'utf8');
       return sendJSON(res, 200, { ok: true, content });
     } catch {
-      return sendJSON(res, 404, { ok: false, error: 'no curriculum yet' });
+      // 200 + {ok:false} so the browser doesn't log a 404 every time a
+      // fresh track is opened — the client checks `r.ok` already.
+      return sendJSON(res, 200, { ok: false, error: 'no curriculum yet' });
     }
   }
 
@@ -599,6 +631,42 @@ async function handle(req, res) {
         if (existsSync(found.path)) await unlink(found.path);
         if (found.legacy && existsSync(found.legacy)) await unlink(found.legacy);
         return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
+      }
+    }
+    if (req.method === 'PUT' || req.method === 'PATCH') {
+      // PUT — replace this thread's history (edit-message-and-truncate UI).
+      // PATCH — partial update (currently: rename via { name }).
+      const body = await readBody(req);
+      const now = new Date().toISOString();
+      const existing = await readChatJsonl(found.path, found.legacy);
+      const m = existing.meta || {};
+      const isRename = req.method === 'PATCH' || (body?.name !== undefined && !Array.isArray(body?.history));
+      // For a rename-only call, keep the existing history; otherwise replace it.
+      const messages = isRename
+        ? existing.history.map((mm) => ({ role: mm.role, content: mm.content, ts: mm.ts || now }))
+        : (Array.isArray(body?.history) ? body.history : [])
+            .filter((mm) => mm && (mm.role === 'user' || mm.role === 'assistant'))
+            .map((mm) => ({ role: mm.role, content: String(mm.content || ''), ts: mm.ts || now }));
+      // Decide what name to store: explicit string wins, '' clears, undefined keeps.
+      const name = body?.name === undefined ? (m.name || '') : String(body.name || '').slice(0, 120);
+      try {
+        await rewriteChatLines(
+          found.path,
+          () => ({
+            kind: 'btw',
+            id: m.id || id,
+            track: m.track || found.track,
+            lesson: m.lesson || null,
+            selection: m.selection || '',
+            name,
+            created_at: m.created_at || now,
+          }),
+          messages,
+        );
+        const data = await readThreadData(found.path);
+        return sendJSON(res, 200, { ok: true, thread: data });
       } catch (e) {
         return sendJSON(res, 500, { ok: false, error: String(e?.message || e) });
       }
@@ -699,6 +767,15 @@ async function writeChatLines(jsonlPath, makeMeta, messages) {
   await appendFile(jsonlPath, lines.map((m) => JSON.stringify(m)).join('\n') + '\n');
 }
 
+// Overwrite the file with a fresh meta line + the supplied message history.
+// Used by the "edit a past message → truncate & re-run" flow.
+async function rewriteChatLines(jsonlPath, makeMeta, messages) {
+  await mkdir(dirname(jsonlPath), { recursive: true });
+  const lines = [JSON.stringify({ type: 'meta', ...makeMeta() })];
+  for (const m of messages) lines.push(JSON.stringify(m));
+  await writeFile(jsonlPath, lines.join('\n') + '\n');
+}
+
 function tutorChatPath(track) {
   return join(STUDYGROUND_DIR, 'tracks', track, 'tutor-chat.jsonl');
 }
@@ -757,6 +834,7 @@ async function readThreadData(jsonlPath, legacyPath) {
     track: meta?.track,
     lesson: meta?.lesson,
     selection: meta?.selection || '',
+    name: meta?.name || '',
     history,
     created_at: meta?.created_at,
     updated_at: history.length ? history[history.length - 1].ts : meta?.created_at,
@@ -1032,6 +1110,20 @@ async function deleteTrackDir(slug) {
 }
 
 // ---------- materials ----------
+// Find a free filename in `dir` by appending " (N)" before the extension.
+// Examples: "test.md" → "test (2).md" if taken; "README" → "README (2)".
+async function uniqueFilename(dir, name) {
+  if (!existsSync(join(dir, name))) return name;
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base} (${i})${ext}`;
+    if (!existsSync(join(dir, candidate))) return candidate;
+  }
+  return `${base} (${Date.now()})${ext}`;
+}
+
 async function listMaterials(slug) {
   const dir = join(STUDYGROUND_DIR, 'tracks', slug, 'materials');
   const files = await readdir(dir).catch(() => []);
@@ -1074,6 +1166,7 @@ async function listThreads({ track, lesson } = {}) {
         track: data.track || t,
         lesson: data.lesson,
         selection: data.selection,
+        name: data.name || '',
         first_question: data.history?.find((m) => m.role === 'user')?.content || '',
         updated_at: data.updated_at,
         created_at: data.created_at,
