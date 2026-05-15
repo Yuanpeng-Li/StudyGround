@@ -22,6 +22,7 @@ Generate the next lesson in the user's current track.
 - 1–2 `?>` markers where a thoughtful student would pause. Each `?>` MUST be followed by `<!-- answer:start --> … <!-- answer:end -->` containing a **pre-written answer** in the lesson's voice (1-4 sentences, longer if genuinely needed). Don't leave it pending — the reader expects answers inline and folds them by default.
 - 0–3 `?>>` btw markers, each with a short pre-written answer inside `<details><summary>deeper</summary>...</details>`.
 - 0–1 `:::exercise` blocks
+- For tabular data, always use markdown pipe tables (`| col | col |` with a `---` separator). **Never** write space-aligned text inside a code fence to fake a table — that renders as `<pre>` and skips all table styling.
 
 ## If no track exists
 If `progress.json` has no `current_track`, ask which topic to start (or pick something close to the user's recently expressed interest) and then defer to the `learn` skill.
