@@ -14,13 +14,20 @@ const BASH_INSPECT = [
   'Bash(ls *)', 'Bash(cat *)', 'Bash(head *)', 'Bash(tail *)',
   'Bash(grep *)', 'Bash(wc *)', 'Bash(find *)', 'Bash(file *)',
   'Bash(stat *)', 'Bash(echo *)', 'Bash(date *)', 'Bash(pwd)',
-  'Bash(sg-search *)',
+  'Bash(diff *)', 'Bash(sg-search *)',
 ];
 // Heavier runners — for skills that legitimately execute user code
 // (check) or that the tutor needs for ad-hoc calculation / scratch work.
+// Includes a narrow set of FS / archive / fetch tools so the tutor can
+// drop a paper into materials/, clone a reference repo, unpack an
+// archive, and organize files when the learner asks. Destructive ops
+// (`rm`, `git push`, broad `git *`) are deliberately excluded — let the
+// model describe and the user confirm those.
 const BASH_RUN = [
   'Bash(python *)', 'Bash(python3 *)', 'Bash(node *)',
-  'Bash(pytest *)', 'Bash(jq *)',
+  'Bash(pytest *)', 'Bash(jq *)', 'Bash(curl *)',
+  'Bash(git clone *)', 'Bash(unzip *)', 'Bash(tar *)',
+  'Bash(mkdir *)', 'Bash(mv *)',
 ];
 const WEB = ['WebSearch', 'WebFetch'];
 
@@ -55,6 +62,18 @@ const MATERIALS_PRIMER = `Working with course materials (when this track has any
 - Cite EVERY material-grounded claim as [<filename>, p.<N>]. No bare "as the paper says".
 See skills/_shared/materials.md for the full reference.`;
 
+// One-paragraph cross-course memory primer reused across prompts. The memory
+// system is intentionally light: an index (MEMORY.md) + N typed entry files,
+// modeled on Claude Code's auto-memory but scoped to the *learner*, not the
+// developer. Skills get this primer so they don't all have to re-document
+// the schema; the writers know which files they may surgically update.
+const MEMORY_PRIMER = `Working with cross-course memory:
+- Read memory/MEMORY.md first — it's the index, one line per memory entry: "- [Title](file.md) — short hook".
+- Based on each hook, Read the entries that matter for this turn. Always Read memory/learner-profile.md (the default learner profile, type=user); Read project-type entries when the track has a known cross-track gate / external constraint.
+- Memory is **cross-course only**. Per-track stuck-points belong in tracks/<slug>/threads/ and lesson <!-- feedback:start --> blocks. This-course scope (lesson count, deadlines, course goal) belongs in tracks/<slug>/curriculum.md. Do NOT pollute memory with those.
+- Entry file format: YAML frontmatter (name / description / metadata.type) + markdown body. Allowed types: \`user\` (durable learner facts) and \`project\` (cross-track coordination, gates, external constraints).
+- Writers (intake on finalize, tutor in edit mode) may surgically update learner-profile.md's H2 sections (Background / Long-term goals / Preferences / Style notes / Patterns across tracks) without explicit user request. To capture a new fact that doesn't fit those sections — e.g. a track-pair gate — create a new typed file and add one line to MEMORY.md.`;
+
 function buildNextPrompt({ studygroundDir, topic, track }) {
   const trackHint = track ? `The current_track is "${track}". ` : '';
   return topic
@@ -63,6 +82,8 @@ function buildNextPrompt({ studygroundDir, topic, track }) {
 ${trackHint}Use the studyground "learn" skill to start a new learning track on: "${topic}".
 
 ${MATERIALS_PRIMER}
+
+${MEMORY_PRIMER}
 
 Write exactly one new lesson file under tracks/<current_track>/lessons/ following the
 lesson-format spec in the skill's _shared/ docs. Update progress.json. Then exit.`
@@ -77,6 +98,8 @@ the next lesson should be whatever's next in that plan, grounded in any
 tracks/<current_track>/materials/ that exist.
 
 ${MATERIALS_PRIMER}
+
+${MEMORY_PRIMER}
 
 Write exactly one new lesson file under tracks/<current_track>/lessons/ following the
 lesson-format spec in the skill's _shared/ docs. Update progress.json. Then exit.`;
@@ -278,6 +301,8 @@ to ground your reply.
 
 ${MATERIALS_PRIMER}
 
+${MEMORY_PRIMER}
+
 ${editLine}
 
 ${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}User's current message:
@@ -309,8 +334,10 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
     '--include-partial-messages',
     '--verbose',
     // Tutor often queries materials before replying — give it room for
-    // multiple sg-searches + a per-file Read or two.
-    '--max-turns', mode === 'edit' ? '20' : '16',
+    // multiple sg-searches + a per-file Read or two. Edit mode also covers
+    // multi-step actions like "drop 8 papers into materials/" (each curl
+    // is a turn), so it gets significantly more headroom than read mode.
+    '--max-turns', mode === 'edit' ? '40' : '16',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {
@@ -365,7 +392,7 @@ export function spawnClaudeTutorStream({ studygroundDir, pluginRoot, body, onDel
   return child;
 }
 
-function buildIntakePrompt({ studygroundDir, track, history, userMessage, finalize }) {
+function buildIntakePrompt({ studygroundDir, track, history, userMessage, finalize, mode }) {
   const turns = (history || [])
     .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.content}`)
     .join('\n\n');
@@ -388,12 +415,31 @@ they just said and decide what's worth asking next, or — if you have enough �
 summarize what you heard and offer to plan (they'll click **Plan curriculum →**
 or you can suggest it). Don't grind through a fixed checklist. Don't recap
 unless you're proposing to plan.`;
+  // Finalize always writes curriculum.md, so it always has Edit/Write —
+  // the toggle only governs ask turns. Don't emit a modeLine for finalize.
+  const modeLine = finalize
+    ? ''
+    : mode === 'edit'
+      ? `\n**Edit mode is ON for this turn.** You can Edit/Write files under
+tracks/${track}/ (e.g. drop a paper into materials/, fix typos in track.json),
+and you can run Bash(python *) / Bash(node *) for one-off jobs like fetching
+a URL to disk when the learner asks. Default to describing first, then act
+only when they confirm. Don't make changes the learner didn't ask for; don't
+write curriculum.md yourself — that's what the **Plan curriculum →** button
+triggers.`
+      : `\n**Read-only mode for this turn.** Do not write files or run code
+runners. If the learner asks you to apply a change (download a paper into
+materials/, edit track metadata, etc.), describe what you'd do and tell
+them to flip the **🔒 read-only ↔ ✎ can edit** toggle in the input bar.`;
   return `You are working inside ${studygroundDir}.
 
 Use the studyground "intake" skill. The current track is "${track}"; metadata at
 tracks/${track}/track.json, any uploaded materials at tracks/${track}/materials/.
 
 ${MATERIALS_PRIMER}
+
+${MEMORY_PRIMER}
+${modeLine}
 
 ${turns ? 'Conversation so far:\n\n' + turns + '\n\n' : ''}${userMessage ? `User just said:\n${userMessage}\n\n` : ''}${finalizeBlock}`;
 }
@@ -403,6 +449,18 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
     onError?.(new Error('intake requires { track }'));
     return null;
   }
+  const isFinalize = body.action === 'finalize';
+  // Intake defaults to edit mode (this is the "Meet your tutor" surface,
+  // where the learner is setting things up and often wants the tutor to
+  // drop papers into materials/, fix the track metadata, etc.). The toggle
+  // on the intake page can switch it back to read-only per track.
+  // Finalize always needs Edit/Write regardless of the toggle.
+  const mode = isFinalize ? 'edit' : (body.mode === 'read' ? 'read' : 'edit');
+  const allowedTools = isFinalize
+    ? TOOLS_CONTENT_EDIT
+    : mode === 'edit'
+      ? TOOLS_TUTOR_EDIT
+      : TOOLS_READ;
   const args = [
     '-p',
     buildIntakePrompt({
@@ -410,12 +468,13 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
       track: body.track,
       history: body.history,
       userMessage: body.user_message,
-      finalize: body.action === 'finalize',
+      finalize: isFinalize,
+      mode,
     }),
     '--plugin-dir', pluginRoot,
     '--add-dir', studygroundDir,
     '--permission-mode', 'acceptEdits',
-    '--allowed-tools', body.action === 'finalize' ? TOOLS_CONTENT_EDIT : TOOLS_READ,
+    '--allowed-tools', allowedTools,
     '--disallowed-tools', 'AskUserQuestion',
     '--output-format', 'stream-json',
     '--include-partial-messages',
@@ -423,7 +482,7 @@ export function spawnClaudeIntakeStream({ studygroundDir, pluginRoot, body, onDe
     // Intake often needs to scan an INDEX.md, fire a few `sg-search`
     // queries across multiple materials, and reply. 8 turns ran out
     // when a learner uploaded a full course of slide decks. Bump.
-    '--max-turns', body.action === 'finalize' ? '24' : '16',
+    '--max-turns', isFinalize ? '24' : '16',
     '--no-session-persistence',
   ];
   const child = spawn('claude', args, {

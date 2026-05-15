@@ -24,7 +24,9 @@ $STUDYGROUND_DIR/
 │       │   └── ...
 │       └── threads/<id>.json    # persisted side-chat conversations (read-only for Claude)
 ├── memory/
-│   └── CLAUDE.md                # learner profile, preferences, stuck-points (global)
+│   ├── MEMORY.md                # index of cross-course memory entries — one line each: "- [Title](file.md) — short hook"
+│   ├── learner-profile.md       # type=user — cross-course learner profile (background / long-term goals / preferences / style notes / patterns)
+│   └── *.md                     # additional typed entries (allowed types: `user`, `project`); each has YAML frontmatter (name / description / metadata.type)
 └── progress.json                # { current_track, tracks: {<slug>: {current, completed, started_at}} }
 ```
 

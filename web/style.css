@@ -629,6 +629,14 @@ dialog.sg-dialog h3 {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-faint);
 }
+.dlg-error {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--red, #c0392b) 12%, transparent);
+  color: var(--red, #c0392b);
+  font-size: 0.875rem;
+}
 .dlg-actions {
   display: flex;
   justify-content: flex-end;
@@ -2273,7 +2281,9 @@ footer {
 #next-progress {
   position: fixed;
   right: 1.2rem;
-  bottom: 2.4rem;
+  /* Sit above the Tutor FAB (bottom: 1.4rem + height ≈ 2.4rem) so the
+     two right-anchored overlays don't stack into each other. */
+  bottom: 4.6rem;
   z-index: 60;
   width: 380px;
   max-width: 90vw;
@@ -2309,6 +2319,10 @@ footer {
 }
 #next-progress.done .np-spinner { background: var(--green); animation: none; }
 #next-progress.error .np-spinner { background: #c0392b; animation: none; }
+/* Reattached after refresh — we don't have the per-tool stream anymore,
+   just a "still cooking" indicator until stream-finished SSE arrives. */
+#next-progress.detached .np-spinner { background: var(--text-faint); animation: sg-pulse 2s ease-in-out infinite; }
+#next-progress.detached { opacity: 0.82; }
 .np-title {
   font-weight: 500;
   color: var(--text-strong);
@@ -2483,8 +2497,10 @@ footer {
   transition: background 120ms;
 }
 .sg-chat-resize:hover,
-.sg-chat-resize.dragging {
+.sg-chat-resize.dragging,
+.sg-chat-resize:focus-visible {
   background: var(--accent-soft);
+  outline: none;
 }
 .sg-chat-form .sg-chat-quote-chip {
   display: none;

@@ -37,6 +37,15 @@ const MIME = {
 const sseClients = new Set();
 const lessonLocks = new Map();
 
+// Map<lockKey, { child, kind, track, killTimer? }> — tracks every spawned
+// claude child that we've intentionally detached from its originating browser
+// connection. Refresh-friendly behavior: when the request socket closes
+// (browser refresh / tab close), we DON'T kill the child — let it finish
+// writing files (lesson.md / curriculum.md / tutor-chat.jsonl). The lock is
+// released by the child's natural exit. Explicit cancellation is a separate
+// path: POST /api/abort with `{ key }` SIGTERMs the child here.
+const inflightChildren = new Map();
+
 // Single-source path-segment validator. Used everywhere a track slug,
 // thread id, lesson slug, or exercise name lands on disk so a request like
 // `/api/thread/..%2F..%2Fevil` can't reach outside its intended directory.
@@ -140,6 +149,32 @@ async function handle(req, res) {
     sseClients.add(res);
     req.on('close', () => sseClients.delete(res));
     return;
+  }
+
+  // List currently-detached streams. Client uses this on page load to
+  // discover "a lesson / tutor reply / intake turn is still cooking in the
+  // background" and restore the appropriate progress UI.
+  if (path === '/api/inflight' && req.method === 'GET') {
+    const items = [...inflightChildren.entries()].map(([key, v]) => ({
+      key, kind: v.kind, track: v.track || null, action: v.action || null,
+    }));
+    return sendJSON(res, 200, { ok: true, inflight: items });
+  }
+
+  // Explicit cancellation of an in-flight stream (Stop button in the UI,
+  // or a stuck process the user wants to free up). Browser refresh does
+  // NOT call this — refresh detaches but lets the work finish.
+  if (path === '/api/abort' && req.method === 'POST') {
+    const body = await readBody(req);
+    const key = body?.key;
+    if (!key) return sendJSON(res, 400, { ok: false, error: 'key required' });
+    const entry = inflightChildren.get(key);
+    if (!entry) return sendJSON(res, 404, { ok: false, error: 'no inflight stream for that key' });
+    try { entry.child?.kill('SIGTERM'); } catch {}
+    // The child's natural exit will fire onError → broadcast stream-finished
+    // (with ok:false) → release lock + drop from registry. We don't do that
+    // cleanup here so we don't race the child.
+    return sendJSON(res, 200, { ok: true });
   }
 
   if (path === '/api/tracks' && req.method === 'GET') {
@@ -396,29 +431,35 @@ async function handle(req, res) {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
-    const write = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    let aborted = false;
+    let clientGone = false;
+    const write = (obj) => { if (!clientGone) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
     let child = null;
-    req.on('close', () => {
-      aborted = true;
-      try { child?.kill('SIGTERM'); } catch {}
-      lessonLocks.delete(nextKey);
-    });
+    // Detach-on-close: refresh / tab close marks the response as gone but
+    // lets the spawned claude finish writing the lesson file + progress.json.
+    // Explicit cancellation goes through POST /api/abort.
+    req.on('close', () => { clientGone = true; });
     child = spawnClaudeNextStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
       body,
-      onDelta: (text) => { if (!aborted) write({ type: 'delta', text }); },
-      onTool: (ev) => { if (!aborted) write({ type: 'tool', ...ev }); },
+      onDelta: (text) => write({ type: 'delta', text }),
+      onTool: (ev) => write({ type: 'tool', ...ev }),
       onDone: (meta) => {
-        if (!aborted) { write({ type: 'done', ...meta }); res.end(); }
+        write({ type: 'done', ...meta });
+        if (!clientGone) res.end();
+        try { broadcast({ type: 'stream-finished', kind: 'next', track: body?.track || null, key: nextKey, ok: true }); } catch {}
+        inflightChildren.delete(nextKey);
         lessonLocks.delete(nextKey);
       },
       onError: (e) => {
-        if (!aborted) { write({ type: 'error', error: String(e?.message || e) }); res.end(); }
+        write({ type: 'error', error: String(e?.message || e) });
+        if (!clientGone) res.end();
+        try { broadcast({ type: 'stream-finished', kind: 'next', track: body?.track || null, key: nextKey, ok: false, error: String(e?.message || e) }); } catch {}
+        inflightChildren.delete(nextKey);
         lessonLocks.delete(nextKey);
       },
     });
+    inflightChildren.set(nextKey, { child, kind: 'next', track: body?.track || null });
     return;
   }
 
@@ -611,46 +652,42 @@ async function handle(req, res) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok: false, error: 'another tutor turn in flight' }));
     }
-    lessonLocks.set(`tutor:${body.track}`, true);
+    const tutorLockKey = `tutor:${body.track}`;
+    lessonLocks.set(tutorLockKey, true);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
-    const write = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    let aborted = false;
+    let clientGone = false;
+    const write = (obj) => { if (!clientGone) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
     let fullText = '';
     let child = null;
-    const tutorLockKey = `tutor:${body.track}`;
-    const releaseLock = () => { lessonLocks.delete(tutorLockKey); };
-    req.on('close', () => {
-      aborted = true;
-      try { child?.kill('SIGTERM'); } catch {}
-      releaseLock();
-    });
+    const releaseLock = () => { lessonLocks.delete(tutorLockKey); inflightChildren.delete(tutorLockKey); };
+    req.on('close', () => { clientGone = true; });
     child = spawnClaudeTutorStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
       body,
-      onDelta: (text) => { fullText += text; if (!aborted) write({ type: 'delta', text }); },
-      onTool: (ev) => { if (!aborted) write({ type: 'tool', ...ev }); },
+      onDelta: (text) => { fullText += text; write({ type: 'delta', text }); },
+      onTool: (ev) => write({ type: 'tool', ...ev }),
       onDone: async (meta) => {
         const answer = meta.full_text || fullText;
-        try {
-          await appendTutorChat(body.track, body.user_message, answer);
-        } catch {}
-        if (!aborted) {
-          write({ type: 'done', ...meta });
-          res.end();
-        }
+        try { await appendTutorChat(body.track, body.user_message, answer); } catch {}
+        write({ type: 'done', ...meta });
+        if (!clientGone) res.end();
+        try { broadcast({ type: 'stream-finished', kind: 'tutor', track: body.track, key: tutorLockKey, ok: true }); } catch {}
         releaseLock();
       },
       onError: (e) => {
-        if (!aborted) { write({ type: 'error', error: String(e?.message || e) }); res.end(); }
+        write({ type: 'error', error: String(e?.message || e) });
+        if (!clientGone) res.end();
+        try { broadcast({ type: 'stream-finished', kind: 'tutor', track: body.track, key: tutorLockKey, ok: false, error: String(e?.message || e) }); } catch {}
         releaseLock();
       },
     });
+    inflightChildren.set(tutorLockKey, { child, kind: 'tutor', track: body.track });
     return;
   }
 
@@ -666,30 +703,26 @@ async function handle(req, res) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok: false, error: 'another tutor/intake turn in flight' }));
     }
-    lessonLocks.set(`tutor:${body.track}`, true);
     const intakeLockKey = `tutor:${body.track}`;
-    const releaseIntakeLock = () => { lessonLocks.delete(intakeLockKey); };
+    lessonLocks.set(intakeLockKey, true);
+    const releaseIntakeLock = () => { lessonLocks.delete(intakeLockKey); inflightChildren.delete(intakeLockKey); };
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
-    const write = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    let aborted = false;
+    let clientGone = false;
+    const write = (obj) => { if (!clientGone) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
     let fullText = '';
     let child = null;
-    req.on('close', () => {
-      aborted = true;
-      try { child?.kill('SIGTERM'); } catch {}
-      releaseIntakeLock();
-    });
+    req.on('close', () => { clientGone = true; });
     child = spawnClaudeIntakeStream({
       studygroundDir: STUDYGROUND_DIR,
       pluginRoot: PLUGIN_ROOT,
       body,
-      onDelta: (text) => { fullText += text; if (!aborted) write({ type: 'delta', text }); },
-      onTool: (ev) => { if (!aborted) write({ type: 'tool', ...ev }); },
+      onDelta: (text) => { fullText += text; write({ type: 'delta', text }); },
+      onTool: (ev) => write({ type: 'tool', ...ev }),
       onDone: async (meta) => {
         const answer = meta.full_text || fullText;
         // Intake = first conversation with the tutor. Persist every turn into
@@ -704,17 +737,19 @@ async function handle(req, res) {
         if (body?.action === 'finalize') {
           try { broadcast({ type: 'curriculum-change', track: body.track }); } catch {}
         }
-        if (!aborted) {
-          write({ type: 'done', ...meta, full_text: answer });
-          res.end();
-        }
+        write({ type: 'done', ...meta, full_text: answer });
+        if (!clientGone) res.end();
+        try { broadcast({ type: 'stream-finished', kind: 'intake', track: body.track, key: intakeLockKey, action: body?.action || 'ask', ok: true }); } catch {}
         releaseIntakeLock();
       },
       onError: (e) => {
-        if (!aborted) { write({ type: 'error', error: String(e?.message || e) }); res.end(); }
+        write({ type: 'error', error: String(e?.message || e) });
+        if (!clientGone) res.end();
+        try { broadcast({ type: 'stream-finished', kind: 'intake', track: body.track, key: intakeLockKey, action: body?.action || 'ask', ok: false, error: String(e?.message || e) }); } catch {}
         releaseIntakeLock();
       },
     });
+    inflightChildren.set(intakeLockKey, { child, kind: 'intake', track: body.track, action: body?.action || 'ask' });
     return;
   }
 
@@ -1207,7 +1242,7 @@ async function listTracks() {
       return {
         ...t,
         lesson_count: lessons.length,
-        material_count: mats.filter((f) => !f.startsWith('.')).length,
+        material_count: mats.filter((f) => !f.startsWith('.') && f !== 'INDEX.md').length,
         current_lesson: progress?.tracks?.[t.slug]?.current || null,
         is_current_track: progress?.current_track === t.slug,
       };
@@ -1386,6 +1421,23 @@ writeFileSync(
 // reflect extraction progress in real time.
 onMaterialEvent((ev) => broadcast(ev));
 
+// Debounce + reconcile when the watcher reports a materials/ filesystem
+// change. Multiple files dropped in quick succession (8 curls in parallel,
+// drag-n-drop of a folder) coalesce into one reconcile per track.
+const materialsReconcileTimers = new Map(); // slug → timeout
+function scheduleMaterialsReconcile(slug) {
+  if (!slug) return;
+  if (materialsReconcileTimers.has(slug)) {
+    clearTimeout(materialsReconcileTimers.get(slug));
+  }
+  materialsReconcileTimers.set(slug, setTimeout(() => {
+    materialsReconcileTimers.delete(slug);
+    reconcile({ studygroundDir: STUDYGROUND_DIR, slug }).catch((e) =>
+      console.warn('[materials] auto-reconcile', slug, ':', e?.message),
+    );
+  }, 800));
+}
+
 // Fire-and-forget reconcile: bring every track's text mirrors + indices up to
 // date with the on-disk materials/. Cheap when everything matches; only does
 // real work when files were dropped in externally or extraction failed last
@@ -1394,7 +1446,16 @@ reconcileAll({ studygroundDir: STUDYGROUND_DIR }).catch((e) =>
   console.warn('[materials] boot reconcile failed:', e?.message),
 );
 
-startWatcher(STUDYGROUND_DIR, broadcast);
+startWatcher(STUDYGROUND_DIR, (ev) => {
+  // Side-effect hook before broadcasting: a materials/ filesystem change
+  // means there's freshly-dropped (or removed) content the indexer needs
+  // to catch up on. The actual broadcast still happens so the UI can show
+  // a "materials updating…" hint if it wants to.
+  if (ev?.type === 'materials-fs-change') {
+    scheduleMaterialsReconcile(ev.track);
+  }
+  broadcast(ev);
+});
 
 createServer(handle).listen(PORT, () => {
   console.log(`studyground reader at http://localhost:${PORT}`);

@@ -24,7 +24,7 @@ other skills (learn / next / ask / check / recap / intake / save-thread)
 - `tracks/<current_track>/materials/INDEX.md` — auto-generated listing with page counts, ≈ token counts, and status per material. **For content lookups, prefer `Bash(sg-search "<query>" --track <current_track>)`** — it returns top chunks with `[file, p.N]` citations. To read more, open `materials/.text/<file>.md` (the page-anchored mirror) and grep / scroll to the right `## p. N`. Native `Read(file.pdf, pages: "1-N")` (≤20pp/call) is the fallback for image-pdf / pending / failed files. Don't try `pdftotext` via Bash. Full reference: `skills/_shared/materials.md`.
 - `tracks/<current_track>/threads/*.json` — past btw threads (signal of what they got stuck on)
 - `progress.json` — completed vs current
-- `memory/CLAUDE.md` — learner profile
+- `memory/MEMORY.md` — index of cross-course memory entries; Read it, then Read the entries that matter (default: `memory/learner-profile.md` for style/pace/depth/goals; project entries when the track has known cross-track gates)
 
 Read shallowly. You don't need to ingest every lesson body — the curriculum
 and progress tell you enough about coverage. Read a specific lesson only if
@@ -75,13 +75,15 @@ header. The current turn's prompt will tell you which one is active.
 - Don't make changes the learner didn't ask for. Don't refactor adjacent
   code. Don't update `progress.json`. `curriculum.md` is fair game if the
   learner asks for a curriculum revision.
-- **Cross-course memory updates.** `memory/CLAUDE.md` is the only file
-  you may edit *without being explicitly asked* — and only when the
+- **Cross-course memory updates.** Files under `memory/` are the only
+  ones you may edit *without being explicitly asked* — and only when the
   learner reveals a **stable, long-term, cross-course** preference in the
-  conversation. Update the matching field in place, surgically.
-  - ✅ "I tend to skip math derivations and look at code first" → **Style notes**
-  - ✅ "I'm coming from a 10-year backend Go background" → **Background**
-  - ✅ "Long term I want to be able to read RL papers without help" → **Long-term goals**
+  conversation. Default target: `memory/learner-profile.md` (type=user)
+  — surgically update the matching H2 section.
+  - ✅ "I tend to skip math derivations and look at code first" → **Style notes** in learner-profile.md
+  - ✅ "I'm coming from a 10-year backend Go background" → **Background** in learner-profile.md
+  - ✅ "Long term I want to be able to read RL papers without help" → **Long-term goals** in learner-profile.md
+  - ✅ "Pause this track at Phase 2 until the other one covers DAgger" → new `type: project` entry like `coord-<a>-<b>.md`, indexed via one line in `memory/MEMORY.md`
   - ❌ "I'm confused about softmax stability right now" → track-local, leave it in `threads/`
   - ❌ "For this course I want 20-minute sessions" → that's a `curriculum.md` revision, not memory
   - ❌ "Lesson 3 was too dense" → feedback on this track, not a cross-course fact

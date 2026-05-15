@@ -141,7 +141,9 @@ tracks/
     .studyground-index/   manifest.json, chunks.jsonl, bm25.json, [vectors.jsonl]
     threads/              saved side-chat JSON files
     exercises/            scaffolded exercise folders
-memory/CLAUDE.md          cross-session learner profile
+memory/MEMORY.md          index of cross-course memory entries (one line each)
+memory/learner-profile.md cross-course learner profile (type=user)
+memory/*.md               additional typed entries (allowed types: user / project)
 progress.json             current track + per-track lesson cursor
 ```
 

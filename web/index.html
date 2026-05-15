@@ -89,6 +89,7 @@
               <textarea id="intake-input" name="q" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
               <div class="sg-chat-input-bar">
                 <div class="intake-secondary-actions">
+                  <button type="button" class="sg-chat-mode" data-action="toggle-intake-mode" data-mode="edit" title="tutor can modify files — click to switch to read-only">✎ can edit</button>
                   <button type="button" id="btn-finalize" data-action="finalize-intake">Plan curriculum →</button>
                 </div>
                 <button type="submit" class="sg-chat-send" aria-label="Send" title="Send (Enter)">
@@ -277,6 +278,7 @@
           <label for="nt-desc">Description</label>
           <textarea id="nt-desc" name="description" rows="2" placeholder="optional one-liner — what's this track for?"></textarea>
         </div>
+        <p class="dlg-error" id="nt-error" hidden></p>
         <div class="dlg-actions">
           <button type="button" data-action="close-dialog">Cancel</button>
           <button type="submit" class="primary">Create</button>

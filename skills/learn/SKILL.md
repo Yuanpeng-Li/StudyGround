@@ -10,7 +10,7 @@ You are tutoring the user in **studyground** — a local learning environment wh
 ## Inputs
 - Topic the user wants to learn (from invocation argument or recent context)
 - `$STUDYGROUND_DIR/progress.json` — current state
-- `$STUDYGROUND_DIR/memory/CLAUDE.md` — learner profile
+- `$STUDYGROUND_DIR/memory/MEMORY.md` — index of cross-course memory entries (Read it, then Read the entries relevant to this turn; default = `memory/learner-profile.md` for style/pace/depth/goals; also `type: project` entries when their description touches this track)
 - `$STUDYGROUND_DIR/tracks/<track-slug>/curriculum.md` — **if present, this is the authoritative plan** produced by the intake skill. The first lesson must match its "1. {title} — {scope}" entry. Do not invent a different sequence.
 - `$STUDYGROUND_DIR/tracks/<track-slug>/materials/` — user-uploaded reference materials (PDFs, notes, web snippets). **Start with `Read tracks/<track>/materials/INDEX.md`** — the auto-generated listing shows every file with page count, ≈ token count, and status. **For content, prefer `Bash(sg-search "<topic>" --track <track> --k 8)`** to find the most relevant passages across all files; cite as `[<filename>, p.<N>]`. To zoom in, open `materials/.text/<file>.md` (page-anchored mirror) at the matching `## p. N`. For image-pdf / pending / failed files, fall back to native `Read(file.pdf, pages: "1-N")` (≤20 pages per call). Don't try `pdftotext` via Bash. If materials conflict with your priors, materials win. Full retrieval reference: `skills/_shared/materials.md`.
 

@@ -486,7 +486,11 @@ const ICON_SUN = '<svg class="sg-icon" viewBox="0 0 24 24" fill="none" stroke="c
 const ICON_MOON = '<svg class="sg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
 
 function getStoredTheme() {
-  return localStorage.getItem('sg-theme') || 'auto';
+  const v = localStorage.getItem('sg-theme');
+  if (v && THEMES.includes(v)) return v;
+  // Invalid or absent — normalise to 'auto' and overwrite the bad entry.
+  try { if (v !== null) localStorage.setItem('sg-theme', 'auto'); } catch {}
+  return 'auto';
 }
 function applyTheme(theme) {
   const root = document.documentElement;
@@ -1841,6 +1845,14 @@ document.addEventListener('click', async (ev) => {
     saveTutorPermission(currentTrack, tutorPermission);
     syncTutorModeButton();
     setStatus('tutor mode: ' + (tutorPermission === 'edit' ? 'can edit' : 'read-only'));
+  } else if (action === 'toggle-intake-mode') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!intakeTrack) return;
+    intakePermission = intakePermission === 'edit' ? 'read' : 'edit';
+    saveIntakePermission(intakeTrack, intakePermission);
+    syncIntakeModeButton();
+    setStatus('tutor mode: ' + (intakePermission === 'edit' ? 'can edit' : 'read-only'));
   } else if (action === 'open-thread') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -2045,6 +2057,7 @@ let chatSelection = '';
 let threadId = null;
 let chatMode = 'btw'; // 'btw' | 'tutor'
 let tutorPermission = 'read'; // 'read' | 'edit' — drives /api/tutor allowed-tools
+let intakePermission = 'edit'; // 'read' | 'edit' — drives /api/intake allowed-tools; defaults to 'edit'
 
 // Identity of the conversation currently mounted in the chat panel — either
 // `tutor:<track>` or `btw:<threadId>`. When close → re-open lands on the
@@ -2071,11 +2084,23 @@ function registerInflight(key, mode, userMessage, target) {
   return e;
 }
 
-// Cancel an in-flight stream (Esc / Stop button). Server sees req.close
-// and SIGTERMs the spawned `claude` child.
+// Cancel an in-flight stream (Esc / Stop button). For tutor / intake the
+// server now DETACHES on req.close (refresh-friendly: lets the work finish
+// in the background). To actually stop the child, hit the explicit abort
+// endpoint first. btw streams are ephemeral and still kill on close — no
+// /api/abort needed for those.
 function abortInflight(key) {
   const e = inflightStreams.get(key);
   if (!e || e.done) return false;
+  if (key.startsWith('tutor:')) {
+    // Fire-and-forget — the server's child.close handler will SSE the
+    // stream-finished event when the child actually exits.
+    fetch('/api/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    }).catch(() => {});
+  }
   try { e.controller.abort(); } catch {}
   e.done = true;
   inflightStreams.delete(key);
@@ -2194,6 +2219,30 @@ function syncTutorModeButton() {
     : 'read-only mode — click to allow tutor to edit files';
   // Only visible in tutor mode
   btn.style.display = chatMode === 'tutor' ? '' : 'none';
+}
+
+// Intake mode mirrors tutor mode but defaults to 'edit' — this is where
+// the learner is setting up the track and typically *wants* the tutor to
+// drop papers into materials/, etc. Different localStorage namespace so
+// the per-track tutor preference (which defaults to 'read') stays
+// independent.
+function loadIntakePermission(track) {
+  try {
+    const v = localStorage.getItem(`sg-intake-mode:${track}`);
+    return v === 'read' ? 'read' : 'edit';
+  } catch { return 'edit'; }
+}
+function saveIntakePermission(track, mode) {
+  try { localStorage.setItem(`sg-intake-mode:${track}`, mode); } catch {}
+}
+function syncIntakeModeButton() {
+  const btn = document.querySelector('[data-action="toggle-intake-mode"]');
+  if (!btn) return;
+  btn.dataset.mode = intakePermission;
+  btn.textContent = intakePermission === 'edit' ? '✎ can edit' : '🔒 read-only';
+  btn.title = intakePermission === 'edit'
+    ? 'tutor can modify files — click to switch to read-only'
+    : 'read-only mode — click to let tutor edit files / fetch papers';
 }
 
 function ensureSelToolbar() {
@@ -2328,7 +2377,7 @@ function ensureChatPanel() {
   chatPanel = document.createElement('aside');
   chatPanel.className = 'sg-chat-panel';
   chatPanel.innerHTML = `
-    <div class="sg-chat-resize" title="drag to resize"></div>
+    <div class="sg-chat-resize" role="separator" aria-orientation="vertical" aria-label="Resize chat panel" tabindex="0" title="drag or use arrow keys to resize"></div>
     <div class="sg-chat-head">
       <span class="sg-chat-title">btw</span>
       <div class="sg-chat-head-actions">
@@ -2441,6 +2490,20 @@ function wireChatResize(panel) {
     panel.classList.remove('dragging');
     const w = document.documentElement.style.getPropertyValue('--sg-chat-width');
     try { if (w) localStorage.setItem('sg-chat-width', w); } catch {}
+    updateOutlineLayout();
+  });
+  // Keyboard resize: ArrowLeft/Right when handle is focused; Shift = bigger step.
+  handle.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    const step = ev.shiftKey ? 64 : 16;
+    // Chat panel grows leftward: ArrowLeft widens, ArrowRight narrows.
+    const dx = ev.key === 'ArrowLeft' ? step : -step;
+    const cs = getComputedStyle(document.documentElement).getPropertyValue('--sg-chat-width');
+    const cur = parseInt(cs, 10) || panel.getBoundingClientRect().width || 440;
+    const next = Math.max(320, Math.min(window.innerWidth * 0.92, cur + dx));
+    document.documentElement.style.setProperty('--sg-chat-width', next + 'px');
+    try { localStorage.setItem('sg-chat-width', next + 'px'); } catch {}
     updateOutlineLayout();
   });
 }
@@ -2656,6 +2719,7 @@ async function openTutorPanel() {
     document.body.classList.add('sg-chat-open');
     updateOutlineLayout();
     resetChatInputIfIdle(panel, currentPanelKey);
+    rememberChatPanelOpen();
     setTimeout(() => panel.querySelector('[name="q"]').focus(), 50);
     return;
   }
@@ -2696,6 +2760,7 @@ async function openTutorPanel() {
     hint.textContent = 'Say anything to start — your tutor knows this course.';
     panel.querySelector('.sg-chat-messages').appendChild(hint);
   }
+  rememberChatPanelOpen();
   setTimeout(() => panel.querySelector('[name="q"]').focus(), 50);
 }
 
@@ -2707,6 +2772,15 @@ function closeChatPanel() {
   // - re-opening the same panel restores instantly with no flicker;
   // - any in-flight stream keeps writing to the (hidden) placeholder, and
   //   on re-attach we fast-forward the text.
+  try { sessionStorage.removeItem('sg-chat-open'); } catch {}
+}
+
+// Remember whether the tutor side panel is open + on which key, so a
+// refresh can put it back. Only tutor mode is persisted — btw panels are
+// tied to ephemeral selections that don't survive reload anyway.
+function rememberChatPanelOpen() {
+  if (chatMode !== 'tutor' || !currentPanelKey) return;
+  try { sessionStorage.setItem('sg-chat-open', currentPanelKey); } catch {}
 }
 
 async function onChatSubmit(ev) {
@@ -3267,7 +3341,109 @@ es.addEventListener('message', async (ev) => {
       setStatus(`${data.phase}: ${data.name}`);
     }
   }
+  // A detached stream (one we couldn't keep listening to because of a
+  // browser refresh) has just finished server-side. Pick up the result by
+  // doing the minimum reload needed for each kind. The actual file
+  // contents arrive via separate SSEs (lesson-change / curriculum-change)
+  // that the watcher fires when the new files land on disk.
+  if (data.type === 'stream-finished') {
+    detachedStreams.delete(data.key);
+    if (data.kind === 'next') {
+      // If the next-progress overlay is still showing in a "reattached"
+      // state, mark it done and dismiss after a beat.
+      if (!nextProgress.hidden && nextProgress.classList.contains('detached')) {
+        nextProgress.classList.remove('detached');
+        nextProgress.classList.add(data.ok ? 'done' : 'error');
+        npTitle.textContent = data.ok
+          ? '✓ lesson finished (background)'
+          : '✗ ' + (data.error || 'failed').slice(0, 60);
+        setTimeout(() => { nextProgress.hidden = true; }, 2200);
+      }
+      setStatus(data.ok ? 'lesson finished in background' : 'background lesson failed');
+    } else if (data.kind === 'tutor') {
+      // If the tutor panel is open on the same track, reload the chat
+      // history (tutor-chat.jsonl was appended in the onDone hook).
+      if (chatMode === 'tutor' && currentPanelKey === `tutor:${data.track}` && chatPanel) {
+        try {
+          const r = await fetch(`/api/tutor/${encodeURIComponent(data.track)}`).then((x) => x.json());
+          chatHistory = (r?.history || []).map((m) => ({ role: m.role, content: m.content }));
+          const msgs = chatPanel.querySelector('.sg-chat-messages');
+          if (msgs) {
+            msgs.innerHTML = '';
+            for (const m of chatHistory) appendChatMessage(m.role, m.content);
+            msgs.scrollTop = msgs.scrollHeight;
+          }
+        } catch {}
+      }
+      setStatus(data.ok ? 'tutor reply finished in background' : 'background tutor reply failed');
+    } else if (data.kind === 'intake') {
+      // Intake-finalize already fires curriculum-change; for intake-ask
+      // just reload the intake chat from tutor-chat.jsonl if the user is
+      // still on the intake page for the same track.
+      if (data.action !== 'finalize' && intakeTrack === data.track) {
+        try {
+          const r = await fetch(`/api/tutor/${encodeURIComponent(data.track)}`).then((x) => x.json());
+          intakeHistory = (r?.history || []).map((m) => ({ role: m.role, content: m.content }));
+          const msgsEl = document.getElementById('intake-messages');
+          if (msgsEl) {
+            msgsEl.innerHTML = '';
+            for (const m of intakeHistory) appendIntakeMsg(m.role, m.content);
+          }
+        } catch {}
+      }
+      setStatus(data.ok ? 'intake reply finished in background' : 'background intake reply failed');
+    }
+  }
 });
+
+// Set of lockKeys we currently believe are running on the server but whose
+// original POST stream we are NOT listening to (we reattached after a
+// refresh). Used to render an unobtrusive "still cooking" indicator and to
+// know what stream-finished SSEs we should react to.
+const detachedStreams = new Set();
+
+// Pull the inflight list once on boot, then sync UI. Runs *after* the
+// router has settled the initial view, so the relevant panels (next /
+// tutor / intake) already exist in the DOM.
+async function reattachInflightStreams() {
+  let inflight = [];
+  try {
+    const r = await fetch('/api/inflight').then((x) => x.json());
+    inflight = r?.inflight || [];
+  } catch { return; }
+  for (const item of inflight) {
+    detachedStreams.add(item.key);
+    if (item.kind === 'next' && item.track && item.track === currentTrack) {
+      // Show the next-progress card in a "detached" state so the user
+      // sees that a lesson is still cooking from before the refresh.
+      nextProgress.classList.remove('done', 'error');
+      nextProgress.classList.add('detached');
+      npTitle.textContent = 'Generating lesson… (running in background)';
+      npTools.innerHTML = '';
+      npText.textContent = '';
+      nextProgress.hidden = false;
+      setStatus('a previous lesson generation is still running — will appear when ready');
+    } else if (item.kind === 'tutor' || item.kind === 'intake') {
+      setStatus(`${item.kind} reply for ${item.track} is still cooking — refresh result will appear when ready`);
+    }
+  }
+}
+// Restore the chat panel if it was open before the refresh. Only fires on
+// the reader view (intake page has its own panel state).
+async function restoreChatPanelFromSession() {
+  let saved = null;
+  try { saved = sessionStorage.getItem('sg-chat-open'); } catch {}
+  if (!saved) return;
+  // Only restore tutor panels (`tutor:<track>`); skip others.
+  if (!saved.startsWith('tutor:')) return;
+  const track = saved.slice('tutor:'.length);
+  // Only restore when we landed back on the same track's reader view.
+  if (!currentTrack || currentTrack !== track) return;
+  try { await openTutorPanel(); } catch {}
+}
+// `reattachInflightStreams` + `restoreChatPanelFromSession` need `currentTrack`
+// to be set, which happens inside the (async) `route()` call at module init.
+// They run after route() settles — see the IIFE at the bottom of the file.
 
 // ---------- Router + Home ----------
 const viewHome = document.getElementById('view-home');
@@ -3468,6 +3644,8 @@ async function enterIntake(slug) {
   intakeTrack = slug;
   intakeHistory = [];
   pendingComments = [];
+  intakePermission = loadIntakePermission(slug);
+  syncIntakeModeButton();
   const msgsEl = document.getElementById('intake-messages');
   msgsEl.innerHTML = '';
   document.getElementById('intake-input').value = '';
@@ -3737,6 +3915,19 @@ function renderPendingComments() {
 }
 
 let intakeStreamController = null;
+// Cancel the in-flight intake stream both client- and server-side.
+// Refresh alone now detaches (server keeps the child running); to actually
+// stop the work we have to POST /api/abort with the right lockKey.
+function abortIntakeStream() {
+  if (intakeTrack) {
+    fetch('/api/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: `tutor:${intakeTrack}` }),
+    }).catch(() => {});
+  }
+  if (intakeStreamController) { try { intakeStreamController.abort(); } catch {} }
+}
 function setIntakeSubmitMode(mode) {
   const btn = document.querySelector('#intake-form button[type="submit"]');
   if (!btn) return;
@@ -3771,6 +3962,7 @@ async function sendIntakeTurn(userMessage, finalize) {
         user_message: userMessage,
         history: histPayload,
         action: finalize ? 'finalize' : 'ask',
+        mode: intakePermission,
       }),
       signal: intakeStreamController.signal,
     });
@@ -3923,7 +4115,7 @@ document.getElementById('intake-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
   const btn = ev.target.querySelector('button[type="submit"]');
   if (btn?.dataset.mode === 'stop') {
-    if (intakeStreamController) { try { intakeStreamController.abort(); } catch {} }
+    abortIntakeStream();
     return;
   }
   const input = document.getElementById('intake-input');
@@ -3942,7 +4134,7 @@ intakeInputEl?.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape') {
     if (intakeStreamController) {
       ev.preventDefault();
-      try { intakeStreamController.abort(); } catch {}
+      abortIntakeStream();
     }
     return;
   }
@@ -4564,6 +4756,8 @@ document.addEventListener('click', async (ev) => {
     // last time even if they hit Cancel, which is surprising.
     newTrackForm.reset();
     setEmojiPickerValue(_ntPicker, document.getElementById('nt-emoji'), COVER_EMOJIS[0]);
+    const ntErr = document.getElementById('nt-error');
+    if (ntErr) { ntErr.hidden = true; ntErr.textContent = ''; }
     newTrackDialog.showModal();
     setTimeout(() => newTrackDialog.querySelector('#nt-title').focus(), 30);
   } else if (action === 'close-dialog') {
@@ -4640,6 +4834,8 @@ document.body.appendChild(importTrackFileInput);
 newTrackForm.addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const fd = new FormData(newTrackForm);
+  const ntErr = document.getElementById('nt-error');
+  if (ntErr) { ntErr.hidden = true; ntErr.textContent = ''; }
   try {
     const r = await fetch('/api/tracks', {
       method: 'POST',
@@ -4650,7 +4846,17 @@ newTrackForm.addEventListener('submit', async (ev) => {
         emoji: fd.get('emoji'),
       }),
     }).then((r) => r.json());
-    if (!r.ok) throw new Error(r.error || 'create failed');
+    if (!r.ok) {
+      const msg = r.error === 'track exists'
+        ? 'A course with this title already exists. Pick a different title.'
+        : (r.error || 'create failed');
+      if (ntErr) {
+        ntErr.textContent = msg;
+        ntErr.hidden = false;
+        document.getElementById('nt-title')?.focus();
+      }
+      return;
+    }
     invalidateTrackSlugCache();
     newTrackDialog.close();
     newTrackForm.reset();
@@ -4658,7 +4864,10 @@ newTrackForm.addEventListener('submit', async (ev) => {
     // Land in intake for new tracks
     location.hash = `#/t/${encodeURIComponent(r.track.slug)}/intake`;
   } catch (e) {
-    alert('create failed: ' + e.message);
+    if (ntErr) {
+      ntErr.textContent = 'Could not create course. Please try again.';
+      ntErr.hidden = false;
+    }
   }
 });
 
@@ -4870,4 +5079,12 @@ document.addEventListener('keydown', (ev) => {
 });
 
 window.addEventListener('hashchange', route);
-route();
+
+// Initial boot: settle the route (which may load tracks / lessons async),
+// then reattach to any detached server-side streams + restore the tutor
+// panel if it was open before refresh.
+(async () => {
+  try { await route(); } catch {}
+  try { await reattachInflightStreams(); } catch {}
+  try { await restoreChatPanelFromSession(); } catch {}
+})();

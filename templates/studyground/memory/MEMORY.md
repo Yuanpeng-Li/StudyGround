@@ -1,0 +1,1 @@
+- [Learner profile](learner-profile.md) — cross-course profile: background, long-term goals, preferences, style notes

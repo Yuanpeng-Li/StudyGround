@@ -1,3 +1,10 @@
+---
+name: learner-profile
+description: cross-course learner profile — background, long-term goals, preferences, style notes
+metadata:
+  type: user
+---
+
 # Learner profile
 
 This is **cross-course** memory about the learner — facts that stay true

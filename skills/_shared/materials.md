@@ -62,6 +62,33 @@ tracks/<track>/
    (Max 20 pages per call. Claude's native PDF Read does vision-based OCR
    on image-only pages.)
 
+## Adding new materials (edit-mode tutors only)
+
+If you're an edit-mode tutor/intake and the learner asks you to drop a new
+paper or reference into the track:
+
+1. Land the file in `tracks/<track>/materials/<file>` — `Bash(curl -o ...)`,
+   `Bash(git clone ...)`, `Bash(unzip ...)`, or `Bash(python3 -c
+   "urllib.request.urlretrieve(...)")` all work.
+2. **Kick the index.** The fs watcher doesn't watch `materials/`, so the
+   file won't show up in `sg-search` until you trigger a reindex:
+
+   ```
+   Bash(curl -s -X POST "http://127.0.0.1:${STUDYGROUND_PORT}/api/tracks/<track>/reindex")
+   ```
+
+   `STUDYGROUND_PORT` is in your env (default 4321). The endpoint returns
+   immediately; the reconcile runs async. Manifest + INDEX.md update on
+   their own — usually within a few seconds for a single PDF, longer for
+   a fat dump.
+
+3. Tell the learner what landed and that it'll be searchable shortly. Use
+   `sg-search` to confirm once the reindex finishes if they want a
+   citation right away.
+
+Don't write into `.studyground-index/` or `.text/` by hand — those are
+regenerated.
+
 ## Citation format
 
 **Always** cite material-grounded claims as `[<filename>, p.<N>]` — single
