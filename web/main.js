@@ -712,6 +712,35 @@ function mergeQuestionBlocks(root) {
   }
 }
 
+// Pull each <div class="sg-feedback" data-exercise="X"> into the matching
+// <div class="sg-exercise" data-name="X"> as a footer section. The two
+// blocks describe the same loop (write code → run check → see feedback);
+// rendering them as one card removes the visual "two siblings" effect and
+// the doubled coral wash.
+function mergeFeedbackIntoExercise(root) {
+  if (!root) return;
+  for (const fb of [...root.querySelectorAll('.sg-feedback')]) {
+    const name = fb.dataset.exercise;
+    if (!name) continue;
+    const ex = root.querySelector(`.sg-exercise[data-name="${CSS.escape(name)}"]`);
+    if (!ex) continue;
+    // Strip the standalone "feedback · <code>name</code>" label — the
+    // exercise header above already says which exercise this is. Inside
+    // the card we just need a thinner divider + the body.
+    const body = fb.querySelector(':scope > .sg-fb-body');
+    if (!body) continue;
+    const section = document.createElement('div');
+    section.className = 'sg-ex-feedback';
+    section.dataset.exercise = name;
+    section.innerHTML =
+      `<div class="sg-ex-feedback-label">last check</div>` +
+      `<div class="sg-ex-feedback-body"></div>`;
+    section.querySelector('.sg-ex-feedback-body').append(...body.childNodes);
+    ex.appendChild(section);
+    fb.remove();
+  }
+}
+
 // Decorate every <pre> with a "Copy" button in the top-right corner.
 // Click → write the code text to the clipboard, briefly flip the label.
 function decorateCodeBlocks(root) {
@@ -1162,6 +1191,7 @@ async function loadLesson(slug) {
   view.innerHTML = titleBlock + md.render(body, {});
   decorateCodeBlocks(view);
   mergeQuestionBlocks(view);
+  mergeFeedbackIntoExercise(view);
   // Title bar may contain $math$ from the frontmatter. Render it via md (inline
   // grammar so no <p> wrapper), then strip the duplicated katex-mathml clone.
   const titleSrc = meta.title || slug;
@@ -1644,8 +1674,12 @@ function setChatSubmitMode(form, mode) {
   if (!form) return;
   const btn = form.querySelector('button[type="submit"]');
   if (!btn) return;
+  // The button has TWO SVG icons inside (.sg-chat-send-icon-send /
+  // .sg-chat-send-icon-stop); CSS swaps which is visible based on
+  // data-mode. Don't touch innerHTML — that would wipe the SVGs.
   btn.dataset.mode = mode;
-  btn.textContent = mode === 'stop' ? 'Stop' : 'Ask';
+  btn.setAttribute('aria-label', mode === 'stop' ? 'Stop' : 'Send');
+  btn.title = mode === 'stop' ? 'Stop (Esc)' : 'Send (Enter)';
 }
 
 // Grow a <textarea> to fit its content up to the CSS max-height; the
@@ -1654,7 +1688,7 @@ function setChatSubmitMode(form, mode) {
 function autosizeTextarea(ta) {
   if (!ta) return;
   ta.style.height = 'auto';
-  ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+  ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
 }
 
 // --- input history (Up/Down through previously-typed prompts) ---
@@ -1895,8 +1929,16 @@ function ensureChatPanel() {
     <div class="sg-chat-messages"></div>
     <form class="sg-chat-form">
       <div class="sg-chat-quote-chip" title="this snippet (selected inside the panel) will be sent as context"></div>
-      <textarea name="q" rows="1" placeholder="ask about this passage… (or highlight text here to quote it)" autocomplete="off"></textarea>
-      <button type="submit">Ask</button>
+      <div class="sg-chat-input-wrap">
+        <textarea name="q" rows="1" placeholder="ask about this passage…" autocomplete="off"></textarea>
+        <div class="sg-chat-input-bar">
+          <span class="sg-chat-input-spacer"></span>
+          <button type="submit" class="sg-chat-send" aria-label="Send" title="Send (Enter)">
+            <svg class="sg-chat-send-icon-send" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            <svg class="sg-chat-send-icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+          </button>
+        </div>
+      </div>
     </form>
   `;
   document.body.appendChild(chatPanel);
@@ -2170,7 +2212,7 @@ function openChatPanel(selection, restoreThread = null) {
   const msgs = panel.querySelector('.sg-chat-messages');
   msgs.innerHTML = '';
   for (const m of chatHistory) appendChatMessage(m.role, m.content);
-  panel.querySelector('[name="q"]').placeholder = 'ask about this passage… (or highlight text here to quote it)';
+  panel.querySelector('[name="q"]').placeholder = 'ask about this passage…';
   panel.classList.add('show');
   document.body.classList.add('sg-chat-open');
   updateOutlineLayout();
@@ -2221,7 +2263,7 @@ async function openTutorPanel() {
   const msgs = panel.querySelector('.sg-chat-messages');
   msgs.innerHTML = '';
   for (const m of chatHistory) appendChatMessage(m.role, m.content);
-  panel.querySelector('[name="q"]').placeholder = 'ask the tutor anything… (or highlight text here to quote it)';
+  panel.querySelector('[name="q"]').placeholder = 'ask the tutor anything…';
   panel.classList.add('show');
   document.body.classList.add('sg-chat-open');
   updateOutlineLayout();
@@ -2912,8 +2954,11 @@ let intakeStreamController = null;
 function setIntakeSubmitMode(mode) {
   const btn = document.querySelector('#intake-form button[type="submit"]');
   if (!btn) return;
+  // Same icon-swap pattern as the chat send button — don't touch innerHTML
+  // because the SVG send / stop icons live inside the button.
   btn.dataset.mode = mode;
-  btn.textContent = mode === 'stop' ? 'Stop' : 'Send';
+  btn.setAttribute('aria-label', mode === 'stop' ? 'Stop' : 'Send');
+  btn.title = mode === 'stop' ? 'Stop (Esc)' : 'Send (Enter)';
 }
 
 async function sendIntakeTurn(userMessage, finalize) {

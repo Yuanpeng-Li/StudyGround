@@ -554,62 +554,66 @@ body.sg-chat-open {
   background: var(--bg);
   padding-top: 0.6rem;
 }
+/* Match the chat panel: the intake textarea + actions row sit inside a
+   single rounded `.sg-chat-input-wrap` container; the secondary buttons
+   (Plan curriculum / skip) live on the left of the bottom action bar. */
+.intake-form .sg-chat-input-wrap {
+  padding: 0.8rem 1rem 0.7rem 1.1rem;
+}
 .intake-form textarea {
   width: 100%;
   font-family: inherit;
   font-size: 1rem;
-  padding: 0.7rem 0.9rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-card);
-  color: var(--text);
-  resize: vertical;
-  min-height: 60px;
-}
-.intake-form textarea:focus {
+  line-height: 1.5;
+  padding: 0.15rem 0;
+  border: none;
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-faint);
+  background: transparent;
+  color: var(--text);
+  resize: none;
+  min-height: 1.5em;
+  max-height: 200px;
+  overflow-y: auto;
 }
-.intake-actions {
-  display: flex;
-  gap: 0.5rem;
+.intake-form textarea::placeholder {
+  color: var(--text-faint);
+}
+.intake-secondary-actions {
+  display: inline-flex;
   align-items: center;
-}
-.intake-actions button.primary {
-  background: var(--accent);
-  color: #FFF;
-  border-color: var(--accent);
-  padding: 0.5rem 1.1rem;
-  border-radius: 999px;
-}
-.intake-actions button.primary:hover:not(:disabled) {
-  background: var(--accent-deep);
+  gap: 0.55rem;
+  flex: 1;
+  min-width: 0;
 }
 #btn-finalize {
-  margin-left: auto;
-  /* Ghost / secondary look — Send (.primary) is the loud one. Bring this
-     in only when the user is ready to finalize. */
-  border-color: var(--border-strong);
+  /* Quiet ghost button — Send is the loud one. Stays visible at all times
+     so the user can finalize whenever they're ready. */
+  border: 1px solid var(--border-strong);
+  background: transparent;
   color: var(--text-muted);
-  padding: 0.5rem 1.1rem;
+  padding: 0.3rem 0.85rem;
   border-radius: 999px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 100ms ease, color 100ms ease, background 100ms ease;
 }
 #btn-finalize:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent-deep);
   background: var(--accent-faint);
 }
-.intake-actions button.link {
+.intake-secondary-actions button.link {
   background: transparent;
   border: none;
   color: var(--text-faint);
   text-decoration: underline;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   padding: 0;
   cursor: pointer;
+  font-family: inherit;
 }
-.intake-actions button.link:hover { color: var(--text-muted); }
+.intake-secondary-actions button.link:hover { color: var(--text-muted); }
 
 /* ---------- new-track dialog ---------- */
 dialog.sg-dialog {
@@ -1556,13 +1560,17 @@ main a:hover {
   text-decoration-color: var(--accent);
 }
 main blockquote {
-  /* Match the sibling "callout" containers (details, feedback) so a
-     blockquote doesn't look like a stripped-down outlier in the prose. */
-  border: 1px solid var(--border);
-  background: var(--bg-sunken);
-  padding: 0.55rem 1rem;
-  border-radius: var(--radius);
+  /* Quotations from source material — quiet, no card. "Callouts" /
+     "asides" / "tangents" are handled by `?>>` + <details> (deeper), so
+     blockquote can stay narrowly semantic ("this is text from elsewhere")
+     without competing for visual weight. */
+  border: none;
+  background: transparent;
+  padding: 0.1rem 0 0.1rem 1.1rem;
+  border-left: 2px solid var(--border);
+  border-radius: 0;
   color: var(--text-muted);
+  font-style: italic;
   margin: 1rem 0;
 }
 main blockquote > :first-child { margin-top: 0; }
@@ -2020,7 +2028,32 @@ details.sg-question > .sg-question-body {
 .sg-ex-body > :first-child { margin-top: 0; }
 .sg-ex-body > :last-child { margin-bottom: 0; }
 
-/* ---------- feedback block ---------- */
+/* ---------- feedback ----------
+   mergeFeedbackIntoExercise() in main.js pulls each .sg-feedback block
+   into the matching .sg-exercise as `.sg-ex-feedback`, so the exercise
+   reads as ONE closed-loop card: header (label + actions) → body (task) →
+   footer (last check). The standalone .sg-feedback rule below is the
+   pre-merge fallback that lessons display while streaming in. */
+.sg-ex-feedback {
+  border-top: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  background: var(--accent-faint);
+}
+.sg-ex-feedback-label {
+  padding: 0.45rem 1.1rem 0.3rem;
+  color: var(--accent-deep);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.sg-ex-feedback-body {
+  padding: 0 1.1rem 0.85rem;
+}
+.sg-ex-feedback-body > :first-child { margin-top: 0; }
+.sg-ex-feedback-body > :last-child { margin-bottom: 0; }
+
+/* Standalone .sg-feedback (pre-merge transient state during streaming): */
 .sg-feedback {
   margin: 1rem 0 1.8rem;
   border: 1px solid var(--accent-soft);
@@ -2704,53 +2737,97 @@ body.sg-chat-open .tutor-fab {
   border-top: 1px solid var(--border);
   background: var(--bg);
 }
-.sg-chat-form input,
-.sg-chat-form textarea {
-  flex: 1;
-  padding: 0.55rem 0.9rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  font-size: 0.92rem;
-  font-family: inherit;
-  line-height: 1.5;
+/* Claude.ai-style chat input: one big rounded container with the textarea
+   on top and a thin action bar (send button on the right) at the bottom. */
+.sg-chat-input-wrap {
+  flex: 1 0 100%;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-card);
-  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 0.75rem 0.9rem 0.65rem 1.1rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.sg-chat-input-wrap:hover {
+  border-color: var(--border-strong);
+}
+.sg-chat-input-wrap:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+  box-shadow: 0 0 0 2px var(--accent-faint), 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .sg-chat-form textarea {
+  width: 100%;
   resize: none;
-  min-height: calc(1.5em + 1.1rem); /* one line + vertical padding */
-  max-height: 160px;                /* JS autosizeTextarea caps height too */
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: inherit;
+  padding: 0.15rem 0;
+  min-height: 1.5em;
+  max-height: 200px;
   overflow-y: auto;
 }
-.sg-chat-form input:focus,
-.sg-chat-form textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-faint);
+.sg-chat-form textarea::placeholder {
+  color: var(--text-faint);
 }
-.sg-chat-form button {
-  padding: 0.55rem 1.1rem;
-  border-radius: 999px;
+.sg-chat-input-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.3rem;
+}
+.sg-chat-input-hint {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.sg-chat-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
   background: var(--accent);
   color: #FFF;
-  border-color: var(--accent);
-  font-weight: 500;
+  border: 1px solid var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 100ms ease, border-color 100ms ease, opacity 100ms ease, transform 60ms ease;
 }
-.sg-chat-form button:hover:not(:disabled) {
+.sg-chat-send:hover:not(:disabled) {
   background: var(--accent-deep);
   border-color: var(--accent-deep);
 }
-/* Stop mode: same shape, but switches to a neutral grey + stop icon hint. */
-.sg-chat-form button[data-mode='stop'],
-#intake-form button[data-mode='stop'] {
+.sg-chat-send:active:not(:disabled) {
+  transform: scale(0.95);
+}
+.sg-chat-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* Icon swap: send arrow when idle, stop square while a turn streams. */
+.sg-chat-send .sg-chat-send-icon-stop { display: none; }
+.sg-chat-send[data-mode='stop'] .sg-chat-send-icon-send { display: none; }
+.sg-chat-send[data-mode='stop'] .sg-chat-send-icon-stop { display: inline-block; }
+.sg-chat-send[data-mode='stop'] {
   background: var(--text-muted);
   border-color: var(--text-muted);
 }
-.sg-chat-form button[data-mode='stop']:hover:not(:disabled),
-#intake-form button[data-mode='stop']:hover:not(:disabled) {
+.sg-chat-send[data-mode='stop']:hover:not(:disabled) {
   background: var(--text-strong);
   border-color: var(--text-strong);
 }
+/* Intake send button shares the icon-swap rules above (.sg-chat-send /
+   .sg-chat-send[data-mode='stop']) — no extra rules needed. */
 /* Interrupted assistant turn — leave whatever partial text was painted,
    tag it visually so the user knows the stream was cut short. */
 .sg-chat-msg.assistant.interrupted,

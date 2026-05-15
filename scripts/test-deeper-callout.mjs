@@ -64,46 +64,43 @@ await p.goto(`${BASE}/#/t/${SLUG}/`);
 await p.waitForSelector('main h1');
 await p.waitForTimeout(500);
 
-// --- assertion (1): no .sg-q-dig pill, deeper block is clickable host ---
-const noDigPill = await p.evaluate(() => {
-  const dig = document.querySelectorAll('.sg-q-dig');
-  return dig.length;
-});
+// --- assertion (1): no .sg-q-dig pill (the old protruding button was
+// removed when the whole block became the click-to-expand details host) ---
+const noDigPill = await p.evaluate(() => document.querySelectorAll('.sg-q-dig').length);
 console.log(`(1a) inline dig-deeper pills: ${noDigPill} (want 0)`);
 
+// The deeper block is now a <details class="sg-question btw"> produced by
+// mergeQuestionBlocks(); the question text lives inside <summary>.
 const btwAttrs = await p.evaluate(() => {
   const el = document.querySelector('.sg-question.btw');
   if (!el) return null;
+  const summary = el.querySelector(':scope > summary');
   return {
-    action: el.getAttribute('data-action'),
-    role: el.getAttribute('role'),
-    hasQuestion: !!el.getAttribute('data-question'),
-    tabindex: el.getAttribute('tabindex'),
-    hasLabel: !!el.querySelector('.sg-q-label'),
-    hasText: !!el.querySelector('.sg-q-text'),
+    tag: el.tagName,
+    hasSummary: !!summary,
+    hasLabel: !!summary?.querySelector('.sg-q-label'),
+    hasText: !!summary?.querySelector('.sg-q-text'),
+    open: el.open,
   };
 });
 console.log(`(1b) .sg-question.btw attrs:`, btwAttrs);
 
-// --- assertion (2): folded summary has DEEPER chip + math rendered ---
-await p.evaluate(() => {
-  // Confirm details still in default-closed state
-  document.querySelectorAll('details').forEach(d => { d.open = false; });
-});
+// --- assertion (2): the merged details renders math in its <summary>
+// (KaTeX should pick up `$\sqrt{d_k}$`); body lives in .sg-question-body. ---
 const summaryInfo = await p.evaluate(() => {
-  const details = document.querySelector('main details');
+  const details = document.querySelector('.sg-question.btw');
   if (!details) return null;
-  const summary = details.querySelector('summary');
+  const summary = details.querySelector(':scope > summary');
   return {
     isOpen: details.open,
     summaryHTML: summary.innerHTML.slice(0, 200),
-    hasDeeperTag: !!summary.querySelector('.sg-deeper-tag'),
-    hasDeeperQ: !!summary.querySelector('.sg-deeper-q'),
+    labelText: summary.querySelector('.sg-q-label')?.textContent?.trim(),
     katexCount: summary.querySelectorAll('.katex').length,
-    visibleText: summary.textContent.trim().slice(0, 160),
+    summaryRawDollars: /\$[^\s$][^$]*\$/.test(summary.innerHTML || '') ? 1 : 0,
+    hasBody: !!details.querySelector(':scope > .sg-question-body'),
   };
 });
-console.log(`(2)  folded summary:`, summaryInfo);
+console.log(`(2)  merged details:`, summaryInfo);
 
 // --- assertion (3): open the btw chat panel directly via the panel API
 // (mouseup-from-selection in headless Playwright is flaky). Then verify
@@ -143,9 +140,9 @@ if (panelBox) {
 }
 
 let failed = 0;
-if (noDigPill !== 0) { console.log('FAIL (1a)'); failed++; }
-if (!btwAttrs || btwAttrs.action !== 'dig-deeper' || btwAttrs.role !== 'button') { console.log('FAIL (1b)'); failed++; }
-if (!summaryInfo || !summaryInfo.hasDeeperTag || !summaryInfo.hasDeeperQ || summaryInfo.katexCount < 1) { console.log('FAIL (2)'); failed++; }
+if (noDigPill !== 0) { console.log('FAIL (1a) dig-pill leaked back'); failed++; }
+if (!btwAttrs || btwAttrs.tag !== 'DETAILS' || !btwAttrs.hasSummary || !btwAttrs.hasLabel || !btwAttrs.hasText) { console.log('FAIL (1b) deeper block is not a merged <details> with label/text'); failed++; }
+if (!summaryInfo || summaryInfo.labelText !== 'deeper' || summaryInfo.katexCount < 1 || summaryInfo.summaryRawDollars > 0 || !summaryInfo.hasBody) { console.log('FAIL (2) summary missing label / math / body'); failed++; }
 if (!chatChrome.open) {
   console.log('FAIL (3a) chat panel did not open'); failed++;
 } else {

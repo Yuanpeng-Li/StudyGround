@@ -115,6 +115,23 @@ details block either. `?>` is **NOT** pre-answered; the user clicks Ask to
 generate one. Use `<!-- answer:pending -->` on its own line right after the
 `?>` question.
 
+❌ Don't use standalone `<details>` for asides / tangents / "click to
+expand". The reader uses one folded-block primitive — `?>>` + `<details>`
+(deeper). A bare `<details>` outside that pair renders the same coral box
+but signals "this should have been a `?>>`". Pick the right primitive:
+
+- **fact worth remembering, ≤ 2 sentences** → inline prose, no marker
+- **digression you predicted the reader would have** → `?>>` + deeper
+- **question you want them to think about** → `?>`
+
+### Quoting source material
+
+Use markdown `>` blockquotes only when literally quoting an external
+source (a paper, a docs page, a code comment). They render as quiet
+italic indented text — *not* as a colored callout. If you find yourself
+reaching for a blockquote to introduce a "note" or "aside", that's
+probably a `?>>` instead.
+
 ### `:::exercise <name>` — hands-on coding block
 
 ```markdown

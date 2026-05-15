@@ -66,11 +66,18 @@
         </section>
         <div id="intake-messages" class="intake-messages"></div>
         <form id="intake-form" class="intake-form">
-          <textarea id="intake-input" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
-          <div class="intake-actions">
-            <button type="submit" class="primary">Send</button>
-            <button type="button" id="btn-finalize" data-action="finalize-intake">Plan curriculum →</button>
-            <button type="button" data-action="skip-intake" class="link">skip for now</button>
+          <div class="sg-chat-input-wrap">
+            <textarea id="intake-input" name="q" placeholder="say anything…" rows="2" autocomplete="off"></textarea>
+            <div class="sg-chat-input-bar">
+              <div class="intake-secondary-actions">
+                <button type="button" id="btn-finalize" data-action="finalize-intake">Plan curriculum →</button>
+                <button type="button" data-action="skip-intake" class="link">skip for now</button>
+              </div>
+              <button type="submit" class="sg-chat-send" aria-label="Send" title="Send (Enter)">
+                <svg class="sg-chat-send-icon-send" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                <svg class="sg-chat-send-icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+              </button>
+            </div>
           </div>
         </form>
       </main>
