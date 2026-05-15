@@ -54,6 +54,20 @@ export function startWatcher(root, emit) {
           emit({ type: 'track-change', track: slug, evType });
         }
       });
+      // Watch materials/ so external file drops (tutor curl'ing a paper in
+      // from the web, learner drag-n-drop via file manager, etc.) trigger a
+      // reconcile. Without this, dropping PDFs in via Bash leaves the index
+      // stale until the next server boot.
+      const matDir = join(tracksRoot, slug, 'materials');
+      if (existsSync(matDir)) {
+        watchDir(`materials:${slug}`, matDir, true, (evType, file) => {
+          // INDEX.md is written by the indexer itself — filter it out to
+          // avoid feedback loops. Dotfiles (.text/, .studyground-index/)
+          // also stay out.
+          if (!file || file === 'INDEX.md' || file.startsWith('.')) return;
+          emit({ type: 'materials-fs-change', track: slug, file, evType });
+        });
+      }
     }
   };
 

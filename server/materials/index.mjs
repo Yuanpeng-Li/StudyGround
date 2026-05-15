@@ -379,7 +379,10 @@ export async function reconcile({ studygroundDir, slug, force = false }) {
   if (!existsSync(dir)) return { processed: [], skipped: [] };
   const files = await readdir(dir).catch(() => []);
   const visible = files.filter((f) => !f.startsWith('.') && f !== 'INDEX.md');
-  const manifest = await loadManifest(studygroundDir, slug);
+  // We only read the manifest here to decide what's stale. processMaterial
+  // is the writer; it re-loads + saves the manifest under the per-track
+  // queue so we don't hold a stale reference across awaits.
+  const seedManifest = await loadManifest(studygroundDir, slug);
   const processed = [];
   const skipped = [];
   for (const f of visible) {
@@ -387,7 +390,7 @@ export async function reconcile({ studygroundDir, slug, force = false }) {
     let st;
     try { st = await stat(filePath); } catch { continue; }
     if (!st.isFile()) continue;
-    const entry = manifest.materials[f];
+    const entry = seedManifest.materials[f];
     const mirrorExists = existsSync(join(textMirrorDir(studygroundDir, slug), safeMirrorName(f)));
     let sha;
     try { sha = await sha256File(filePath); } catch { sha = null; }
@@ -403,15 +406,22 @@ export async function reconcile({ studygroundDir, slug, force = false }) {
       console.warn('[materials] reconcile failed for', slug, f, ':', e?.message);
     }
   }
+  // Re-load: processMaterial just wrote N new entries; our local seedManifest
+  // is stale. Cleanup uses the fresh on-disk state.
+  const manifest = await loadManifest(studygroundDir, slug);
   // Drop manifest entries for files that no longer exist on disk.
   const stillOnDisk = new Set(visible);
+  let droppedAny = false;
   for (const name of Object.keys(manifest.materials)) {
     if (!stillOnDisk.has(name)) {
       delete manifest.materials[name];
+      droppedAny = true;
     }
   }
-  await saveManifest(studygroundDir, slug, manifest);
-  await regenerateIndexMd(studygroundDir, slug);
+  if (droppedAny) {
+    await saveManifest(studygroundDir, slug, manifest);
+    await regenerateIndexMd(studygroundDir, slug);
+  }
   return { processed, skipped };
 }
 
